@@ -29,6 +29,59 @@ static void testFocus() {
   assert(near(focusFrame(10, 1500, off).v, FOCUS_LEVEL_IF_LAMP_OFF));  // lamp was off: still shows
 }
 
+static void testWake() {
+  const int32_t lead = 30 * 60, insistAfter = 10 * 60;
+  assert(wakePhase(-lead - 1, lead, insistAfter) == WAKE_WAITING);
+  assert(wakePhase(-lead, lead, insistAfter) == WAKE_SUNRISE);
+  assert(wakePhase(-1, lead, insistAfter) == WAKE_SUNRISE);
+  assert(wakePhase(0, lead, insistAfter) == WAKE_HOLD);             // alarm time: full, steady
+  assert(wakePhase(insistAfter - 1, lead, insistAfter) == WAKE_HOLD);
+  assert(wakePhase(insistAfter, lead, insistAfter) == WAKE_INSIST);
+  assert(wakePhase(insistAfter + WAKE_INSIST_S - 1, lead, insistAfter) == WAKE_INSIST);
+  assert(wakePhase(insistAfter + WAKE_INSIST_S, lead, insistAfter) == WAKE_OVER);  // never flashes forever
+  assert(wakePhase(600, lead, 0) == WAKE_HOLD && wakePhase(WAKE_INSIST_S, lead, 0) == WAKE_OVER);  // 0 = no insisting
+
+  const float total = WAKE_INSIST_S;
+  assert(near(wakeInsistFrame(0, total).v, 100));                    // starts from the full light
+  float lowestEarly = 100, lowestLate = 100;
+  for (float t = 0; t < 60; t += 0.02f) lowestEarly = fminf(lowestEarly, wakeInsistFrame(t, total).v);
+  for (float t = total - 60; t < total; t += 0.02f) lowestLate = fminf(lowestLate, wakeInsistFrame(t, total).v);
+  assert(lowestEarly > 60 && lowestLate < 5);                        // shallow at first, to black at the end
+  // Count pulses in the first and in the last ten seconds: it speeds up, but
+  // never beyond 2 per second.
+  auto pulsesIn = [&](float from) {
+    int count = 0;
+    bool wasHigh = true;
+    for (float t = from; t < from + 10; t += 0.01f) {
+      bool isHigh = wakeInsistFrame(t, total).v > 99.0f - 30.0f * (WAKE_PULSE_DEPTH_START) / 2;
+      if (isHigh && !wasHigh) count++;
+      wasHigh = isHigh;
+    }
+    return count;
+  };
+  int early = pulsesIn(5), late = pulsesIn(total - 12);
+  assert(early >= 1 && early <= 4 && late >= 15 && late <= 21);
+  for (float t = 0; t <= total; t += 0.37f) {
+    Hsv c = wakeInsistFrame(t, total);
+    assert(c.v >= 0 && c.v <= 100 && c.s >= 0 && c.s <= 50.01f);
+  }
+  assert(near(wakeInsistFrame(total * 9, total).s, 0));              // past the end: clamped
+
+  assert(secondsUntilClock(23, 0, 0, 7, 30) == 8 * 3600 + 1800);     // tonight for tomorrow morning
+  assert(secondsUntilClock(7, 0, 0, 7, 30) == 1800);                 // later today
+  assert(secondsUntilClock(7, 30, 0, 7, 30) == 86400);               // exactly now: tomorrow
+  assert(secondsUntilClock(7, 30, 1, 7, 30) == 86399);
+  assert(secondsUntilClock(0, 0, 0, 23, 59) == 86340);
+
+  int h = -1, m = -1;
+  assert(parseClock("07:30", h, m) && h == 7 && m == 30);
+  assert(parseClock("23:59", h, m) && parseClock("00:00", h, m) && h == 0 && m == 0);
+  h = 5; m = 6;
+  assert(!parseClock("24:00", h, m) && !parseClock("7:30", h, m) && !parseClock("07-30", h, m));
+  assert(!parseClock("07:60", h, m) && !parseClock("ab:cd", h, m) && !parseClock("", h, m) && !parseClock("07:300", h, m));
+  assert(h == 5 && m == 6);                                          // bad input leaves outputs untouched
+}
+
 static void testShimmer() {
   for (uint32_t t = 0; t < 5000; t += 7) {
     float g = shimmerGain(t, 0.3f);
@@ -79,6 +132,7 @@ static void testClock() {
 int main() {
   testSunrise();
   testFocus();
+  testWake();
   testShimmer();
   testPulse();
   testSmoothing();

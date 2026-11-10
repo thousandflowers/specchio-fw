@@ -27,13 +27,16 @@ static const uint32_t STABLE_OFFLINE_MS = 300000;  // HomeKit cannot start witho
 static const uint32_t BLINK_MS = 120;
 static const time_t MIN_VALID_EPOCH = 1700000000;  // before this the clock is not set yet
 static const int DEFAULT_SHIMMER = 30;
+static const int DEFAULT_WAKE_LEAD_MIN = 30;    // the ramp length used in dawn-simulation studies
+static const int DEFAULT_WAKE_INSIST_MIN = 10;
+static const int32_t WAKE_RESYNC_S = 2;         // re-anchor to the wall clock only on a real jump
 static const Hsv EFFECT_DONE_COLOUR = {0, 100, 100};
 static const char *CONFIG_PATH = "/cfg";
 static const char *STATE_PATH = "/state";
 
 // Radio defaults match the stock firmware (802.11b/g/n, SDK TX power): on the
 // first flash a forced 11g mode lost the link within a minute.
-Config cfg = {{12, 4, 14}, 'n', 'l', 250, false, 0, 0, false};
+Config cfg = {{12, 4, 14}, 'n', 'l', 250, false, 0, 0, false, 0, DEFAULT_WAKE_LEAD_MIN, DEFAULT_WAKE_INSIST_MIN};
 Light light = {true, 30, 60, 100};  // warm white until a saved state is loaded
 EventLog elog;
 bool safeMode = false;
@@ -63,6 +66,9 @@ static Hsv fxLightBefore;
 static Pulse pulse;
 static uint32_t pulseStartedAt;
 static bool isPulsing, isRaw, isDirty, isHomekitUp, isBootStable;
+static WakePhase wakeState = WAKE_WAITING;
+static int32_t wakeAnchorS;     // seconds from the alarm at the anchor...
+static uint32_t wakeAnchorMs;   // ...and millis() at that moment: smooth time between clock ticks
 
 // ---------- boot-loop guard ----------
 static void bootGuardWrite(BootGuard g) { ESP.rtcUserMemoryWrite(0, (uint32_t *)&g, sizeof g); }
@@ -120,13 +126,17 @@ static void loadConfig() {
   if (kvGet(text.c_str(), "tx", v, sizeof v)) cfg.txDbm = constrain(atoi(v), 0, MAX_TX_DBM);
   if (kvGet(text.c_str(), "shimmer", v, sizeof v)) cfg.shimmer = constrain(atoi(v), 0, 100);
   if (kvGet(text.c_str(), "hourly", v, sizeof v)) cfg.isHourly = v[0] == '1';
+  if (kvGet(text.c_str(), "wake", v, sizeof v)) cfg.wakeAt = strtoul(v, nullptr, 10);
+  if (kvGet(text.c_str(), "wlead", v, sizeof v)) cfg.wakeLeadMin = constrain(atoi(v), MIN_WAKE_LEAD_MIN, MAX_WAKE_LEAD_MIN);
+  if (kvGet(text.c_str(), "winsist", v, sizeof v)) cfg.wakeInsistMin = constrain(atoi(v), 0, MAX_WAKE_INSIST_MIN);
 }
 
 bool saveConfig() {
-  char text[128];
-  snprintf(text, sizeof text, "pins=%d,%d,%d\nphy=%c\nboot=%c\nfade=%u\nprov=%d\ntx=%u\nshimmer=%u\nhourly=%d\n",
+  char text[176];
+  snprintf(text, sizeof text,
+           "pins=%d,%d,%d\nphy=%c\nboot=%c\nfade=%u\nprov=%d\ntx=%u\nshimmer=%u\nhourly=%d\nwake=%lu\nwlead=%u\nwinsist=%u\n",
            cfg.pins[0], cfg.pins[1], cfg.pins[2], cfg.phy, cfg.boot, cfg.fadeMs, cfg.provisioned,
-           cfg.txDbm, cfg.shimmer, cfg.isHourly);
+           cfg.txDbm, cfg.shimmer, cfg.isHourly, (unsigned long)cfg.wakeAt, cfg.wakeLeadMin, cfg.wakeInsistMin);
   return writeFile(CONFIG_PATH, text);
 }
 
@@ -281,9 +291,83 @@ void setHourly(bool isOn) {
   saveConfigOrLog();
 }
 
+// ---------- wake-up ----------
+static bool isWakeRunning() { return wakeState == WAKE_SUNRISE || wakeState == WAKE_HOLD || wakeState == WAKE_INSIST; }
+
+static float wakeSecondsFromAlarm() { return wakeAnchorS + (millis() - wakeAnchorMs) / 1000.0f; }
+
+static void forgetWake() {
+  cfg.wakeAt = 0;
+  wakeState = WAKE_WAITING;
+  saveConfigOrLog();
+}
+
+void cancelWake() {
+  if (!cfg.wakeAt) return;
+  LOG("wake: cancelled");
+  forgetWake();
+}
+
+// The lamp stays on at the sunrise's final colour: nobody wants darkness the
+// moment they stop the alarm.
+static void endWakeWithLampOn(const char *why) {
+  LOG("wake: %s", why);
+  forgetWake();
+  light.on = true;
+  light.h = WAKE_FULL_LIGHT.h;
+  light.s = WAKE_FULL_LIGHT.s;
+  light.v = WAKE_FULL_LIGHT.v;
+  markDirty();
+  notifyHomekit();
+}
+
+void acknowledgeWake() {
+  if (isWakeRunning()) endWakeWithLampOn("acknowledged");
+}
+
+bool setWake(int hour, int minute, int leadMinutes, int insistMinutes) {
+  time_t now = time(nullptr);
+  if (now < MIN_VALID_EPOCH) return false;
+  struct tm *local = localtime(&now);
+  cfg.wakeAt = (uint32_t)now + secondsUntilClock(local->tm_hour, local->tm_min, local->tm_sec, hour, minute);
+  cfg.wakeLeadMin = constrain(leadMinutes, MIN_WAKE_LEAD_MIN, MAX_WAKE_LEAD_MIN);
+  cfg.wakeInsistMin = constrain(insistMinutes, 0, MAX_WAKE_INSIST_MIN);
+  wakeState = WAKE_WAITING;
+  saveConfigOrLog();
+  LOG("wake: set for %02d:%02d, sunrise %u min before, insist after %u min", hour, minute,
+      cfg.wakeLeadMin, cfg.wakeInsistMin);
+  return true;
+}
+
+const char *wakePhaseName() {
+  static const char *const names[] = {"waiting", "sunrise", "hold", "insist", "over"};
+  return cfg.wakeAt ? names[wakeState] : "";
+}
+
+// Once a second, with a valid wall clock.
+static void wakeTick(time_t now) {
+  if (!cfg.wakeAt) return;
+  int32_t fromAlarm = (int32_t)((int64_t)now - (int64_t)cfg.wakeAt);
+  bool isAnchored = wakeState != WAKE_WAITING;
+  if (!isAnchored || abs(fromAlarm - (int32_t)wakeSecondsFromAlarm()) > WAKE_RESYNC_S) {
+    wakeAnchorS = fromAlarm;
+    wakeAnchorMs = millis();
+  }
+  WakePhase phase = wakePhase(fromAlarm, cfg.wakeLeadMin * 60, cfg.wakeInsistMin * 60);
+  if (phase == wakeState) return;
+  // An alarm that passed while the strip was unpowered must not light the room now.
+  bool wasMissed = wakeState == WAKE_WAITING && phase == WAKE_OVER;
+  if (wasMissed) { LOG("wake: alarm time already passed, dropped"); forgetWake(); return; }
+  if (phase == WAKE_OVER) { endWakeWithLampOn("finished, lamp left on"); return; }
+  if (wakeState == WAKE_WAITING) stopEffect();  // the wake-up takes the lamp from any effect
+  wakeState = phase;
+  LOG("wake: %s", wakePhaseName());
+}
+
 // The lamp was changed by hand (Home app, web page, button): that wins over
-// any running effect.
+// any running effect, and over a wake-up in progress.
 static void onLightChanged() {
+  if (isWakeRunning()) { LOG("wake: lamp changed by hand, stopped"); forgetWake(); }
   stopEffect();
   leaveRawMode();
   markDirty();
@@ -307,6 +391,14 @@ static void renderTick() {
     want = fx->frame(elapsed / 1000.0f, fxDurationMs / 1000.0f, fxLightBefore);
   } else if (cfg.shimmer > 0) {
     want.v *= shimmerGain(now, cfg.shimmer / 100.0f);
+  }
+
+  if (isWakeRunning()) {
+    float fromAlarm = wakeSecondsFromAlarm();
+    float lead = cfg.wakeLeadMin * 60.0f;
+    if (wakeState == WAKE_HOLD) want = WAKE_FULL_LIGHT;
+    else if (wakeState == WAKE_INSIST) want = wakeInsistFrame(fromAlarm - cfg.wakeInsistMin * 60.0f, WAKE_INSIST_S);
+    else if (!light.on) want = sunriseFrame(lead + fromAlarm, lead, want);  // a lamp already on is not dimmed for a sunrise
   }
 
   bool isCrisp = false;  // pulses need hard edges: no smoothing
@@ -345,9 +437,10 @@ static void clockTick() {
   lastCheckAt = millis();
   time_t now = time(nullptr);
   if (now < MIN_VALID_EPOCH) return;
+  wakeTick(now);
   if (!isNewHour(lastHour, localtime(&now)->tm_hour)) return;
   // Only while the lamp is plainly on: not in the dark, not over an effect.
-  if (cfg.isHourly && light.on && !fx) {
+  if (cfg.isHourly && light.on && !fx && !isWakeRunning()) {
     startPulse(tickPulse());
     LOG("hour tick %02d:00", lastHour);
   }
@@ -433,8 +526,12 @@ static void buttonTick() {
     blink(3);
     factoryReset();
   } else if (!isDown && wasDown && fired == PRESS_NONE && press == PRESS_TOGGLE) {
-    light.on = !light.on;
-    applyLight();
+    if (isWakeRunning()) {  // during a wake-up the button means "I am up"
+      acknowledgeWake();
+    } else {
+      light.on = !light.on;
+      applyLight();
+    }
   }
   wasDown = isDown;
 }

@@ -32,6 +32,7 @@ a{color:#888}
 <div class=r><button id=fa>Alba</button><button id=ff>Focus</button></div>
 <label>Vibrazione<input type=range id=m min=0 max=100></label>
 <label><input type=checkbox id=o>Tic a ogni cambio d'ora</label>
+<label>Sveglia: l'alba parte prima, la luce insiste dopo<input type=time id=w></label>
 <p>Segnale <span id=g>…</span><br><span id=k></span></p>
 <details><summary>Cambia rete Wi-Fi</summary><form method=post action=/api/wifi>
 <input name=ssid placeholder="Nome rete" required maxlength=32 autocapitalize=none>
@@ -41,7 +42,8 @@ a{color:#888}
 </main><script>
 const $=i=>document.getElementById(i);let st={},timer=0,touched=0;
 function show(j){st=j;$('p').textContent=j.on?'Accesa':'Spenta';$('p').className=j.on?'on':'';
-if(Date.now()-touched>1500){$('c').value='#'+j.hex;$('v').value=j.v;$('m').value=j.shimmer;$('o').checked=j.hourly}
+if(Date.now()-touched>1500){$('c').value='#'+j.hex;$('v').value=j.v;$('m').value=j.shimmer;$('o').checked=j.hourly;
+if(document.activeElement!=$('w'))$('w').value=j.wake}
 for(const[b,n,t]of[['fa','alba','Alba'],['ff','focus','Focus']]){const a=j.effect==n;$(b).className=a?'on':'';
 $(b).textContent=a?t+' · '+Math.ceil(j.effect_left_s/60)+' min':t}
 $('g').textContent=j.rssi?j.rssi+' dBm, '+(j.rssi>-67?'buono':j.rssi>-80?'debole':'molto debole'):'non collegata al Wi-Fi';
@@ -53,6 +55,7 @@ $('c').oninput=e=>soon('hex='+e.target.value.slice(1));
 $('v').oninput=e=>soon('v='+e.target.value);
 $('m').oninput=e=>soon('shimmer='+e.target.value);
 $('o').onchange=e=>set('hourly='+(e.target.checked?1:0));
+$('w').onchange=e=>fetch('/api/wake?'+(e.target.value?'at='+e.target.value:'off=1')).then(poll);
 const fx=n=>fetch('/api/effect?name='+(st.effect==n?'off':n)).then(poll);
 $('fa').onclick=()=>fx('alba');$('ff').onclick=()=>fx('focus');
 async function poll(){try{show(await(await fetch('/api/state')).json())}catch(e){}}
@@ -84,13 +87,17 @@ static void sendState() {
   char clock[6] = "";
   time_t now = time(nullptr);
   if (now > 1700000000) strftime(clock, sizeof clock, "%H:%M", localtime(&now));
-  char buf[900];
+  char wake[6] = "";
+  time_t wakeAt = cfg.wakeAt;
+  if (wakeAt) strftime(wake, sizeof wake, "%H:%M", localtime(&wakeAt));
+  char buf[960];
   snprintf(buf, sizeof buf,
     "{\"on\":%s,\"h\":%s,\"s\":%s,\"v\":%d,\"hex\":\"%s\","
     "\"rssi\":%d,\"ssid\":\"%s\",\"bssid\":\"%s\",\"channel\":%d,\"phy\":\"%c\","
     "\"disconnects\":%lu,\"failed_joins\":%lu,\"last_disconnect\":\"%s\",\"tx_dbm\":%u,"
     "\"pins\":\"%d,%d,%d\",\"boot\":\"%c\",\"fade_ms\":%u,"
     "\"effect\":\"%s\",\"effect_left_s\":%lu,\"shimmer\":%u,\"hourly\":%s,\"time\":\"%s\","
+    "\"wake\":\"%s\",\"wake_phase\":\"%s\",\"wake_lead_min\":%u,\"wake_insist_min\":%u,"
     "\"homekit_paired\":%s,\"homekit_clients\":%d,\"safe_mode\":%s,"
     "\"heap\":%lu,\"uptime_s\":%lu,\"reset\":\"%s\",\"fw\":\"%s\"}",
     light.on ? "true" : "false", String(light.h, 1).c_str(), String(light.s, 1).c_str(), (int)light.v, hex,
@@ -100,6 +107,7 @@ static void sendState() {
     netLastReason ? discReasonName(netLastReason) : "", cfg.txDbm,
     cfg.pins[0], cfg.pins[1], cfg.pins[2], cfg.boot, cfg.fadeMs,
     effectName(), (unsigned long)effectSecondsLeft(), cfg.shimmer, cfg.isHourly ? "true" : "false", clock,
+    wake, wakePhaseName(), cfg.wakeLeadMin, cfg.wakeInsistMin,
     homekitPaired() ? "true" : "false", homekitClients(), safeMode ? "true" : "false",
     (unsigned long)ESP.getFreeHeap(), millis() / 1000UL, ESP.getResetReason().c_str(), FW_VERSION);
   server.send(200, "application/json", buf);
@@ -136,6 +144,22 @@ static void handleEffect() {
     return sendText(400, "minutes: 0.1 to 180");
   }
   if (!startEffect(name.c_str(), minutes)) return sendText(400, "name: alba, focus or off");
+  sendState();
+}
+
+// /api/wake?at=07:30[&lead=30][&insist=10]   next time the clock reads 07:30
+// /api/wake?stop=1   "I am up": ends a wake-up in progress, lamp stays on
+// /api/wake?off=1    forget the alarm
+static void handleWake() {
+  if (server.arg("stop") == "1") { acknowledgeWake(); return sendState(); }
+  if (server.arg("off") == "1") { cancelWake(); return sendState(); }
+  int hour, minute;
+  if (!parseClock(server.arg("at").c_str(), hour, minute)) return sendText(400, "at: HH:MM, e.g. 07:30 (or stop=1, off=1)");
+  long lead = server.hasArg("lead") ? server.arg("lead").toInt() : cfg.wakeLeadMin;
+  long insist = server.hasArg("insist") ? server.arg("insist").toInt() : cfg.wakeInsistMin;
+  if (lead < MIN_WAKE_LEAD_MIN || lead > MAX_WAKE_LEAD_MIN) return sendText(400, "lead: 1-60 minutes");
+  if (insist < 0 || insist > MAX_WAKE_INSIST_MIN) return sendText(400, "insist: 0-60 minutes, 0 = never");
+  if (!setWake(hour, minute, lead, insist)) return sendText(503, "the strip has not got the time from the network yet");
   sendState();
 }
 
@@ -213,6 +237,7 @@ void webBegin() {
   server.on("/api/raw", handleRaw);
   server.on("/api/effect", handleEffect);
   server.on("/api/flash", handleFlash);
+  server.on("/api/wake", handleWake);
   server.on("/api/roam", [] { netRequestRoamScan(); sendText(200, "scan started, see /api/log"); });
   server.on("/api/config", handleConfig);
   server.on("/api/wifi", HTTP_POST, handleWifi);

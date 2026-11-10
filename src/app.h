@@ -7,7 +7,7 @@
 #include "effects.h"
 #include "policy.h"
 
-#define FW_VERSION "2.2.2"
+#define FW_VERSION "2.4.0"
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
 #define TIMEZONE TZ_Europe_Rome  // for the hourly tick
@@ -36,6 +36,9 @@ struct Config {
   uint8_t txDbm;      // max TX power, 0 = leave the SDK default
   uint8_t shimmer;    // 0-100: how much the idle lamp "vibrates", 0 = still
   bool isHourly;      // tick the lamp at every change of hour
+  uint32_t wakeAt;        // epoch of the next alarm the phone told us about, 0 = none
+  uint8_t wakeLeadMin;    // sunrise starts this long before it
+  uint8_t wakeInsistMin;  // pulses start this long after it, 0 = never
 };
 
 struct Light { bool on; float h, s, v; };  // HomeKit units: 0-360, 0-100, 0-100
@@ -59,6 +62,11 @@ uint32_t effectSecondsLeft();
 void flash(float hue, float saturation, int count);  // coloured blinks over whatever is showing
 void setShimmer(int amount);
 void setHourly(bool isOn);
+// Wake-up light for the next alarm. False when the strip does not know the time yet.
+bool setWake(int hour, int minute, int leadMinutes, int insistMinutes);
+void cancelWake();           // forget the alarm, leave the lamp alone
+void acknowledgeWake();      // "I am up": stop the sequence, lamp stays on
+const char *wakePhaseName(); // "" when no alarm is set
 void restartClean();                  // intentional reboot: does not count as a crash
 void factoryReset();
 bool homekitPaired();

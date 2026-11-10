@@ -4,6 +4,7 @@
 #pragma once
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
 #include "color.h"
 
 struct Hsv { float h, s, v; };  // 0-360, 0-100, 0-100: HomeKit units
@@ -36,6 +37,69 @@ inline Hsv focusFrame(float elapsed, float total, const Hsv &before) {
     level *= 1 - FOCUS_HALFWAY_DIP_DEPTH * sinf(PI_F * sinceHalf / FOCUS_HALFWAY_DIP_S);
   }
   return {120 * (1 - p), 100, level};
+}
+
+// ---------- wake-up: sunrise before the alarm, insistence after it ----------
+// The phone tells the strip when its next alarm is; from then on the strip
+// needs no network. Timeline around the alarm time T:
+//   T-lead .. T          sunrise, ends at full warm light exactly at T
+//   T .. T+insistAfter   steady full light: the gentle part
+//   then, for WAKE_INSIST_S: pulses that grow faster and deeper
+//   after that           steady full light again, and the wake-up is over
+enum WakePhase { WAKE_WAITING, WAKE_SUNRISE, WAKE_HOLD, WAKE_INSIST, WAKE_OVER };
+
+static const int MIN_WAKE_LEAD_MIN = 1;
+static const int MAX_WAKE_LEAD_MIN = 60;
+static const int MAX_WAKE_INSIST_MIN = 60;
+
+static const int32_t WAKE_INSIST_S = 20 * 60;
+static const Hsv WAKE_FULL_LIGHT = {35, 50, 100};  // where the sunrise ends
+// Never above 2 flashes a second: flicker from about 3 Hz up is the range that
+// can trigger seizures in photosensitive people.
+static const float WAKE_PULSE_HZ_START = 0.25f;
+static const float WAKE_PULSE_HZ_END = 2.0f;
+static const float WAKE_PULSE_DEPTH_START = 0.3f;
+static const float WAKE_PULSE_DEPTH_END = 1.0f;
+
+// insistAfterS <= 0 means "never insist": the light just stays on.
+inline WakePhase wakePhase(int32_t secondsFromAlarm, int32_t leadS, int32_t insistAfterS) {
+  if (secondsFromAlarm < -leadS) return WAKE_WAITING;
+  if (secondsFromAlarm < 0) return WAKE_SUNRISE;
+  if (insistAfterS <= 0) return secondsFromAlarm < WAKE_INSIST_S ? WAKE_HOLD : WAKE_OVER;
+  if (secondsFromAlarm < insistAfterS) return WAKE_HOLD;
+  if (secondsFromAlarm < insistAfterS + WAKE_INSIST_S) return WAKE_INSIST;
+  return WAKE_OVER;
+}
+
+// Pulses that start slow and shallow and end fast and to black. The phase is
+// the integral of a linearly rising frequency, so the rhythm speeds up
+// smoothly instead of jumping. The colour drifts from warm to plain white.
+inline Hsv wakeInsistFrame(float secondsIn, float totalS) {
+  float p = clampf(secondsIn / totalS, 0, 1);
+  float t = p * totalS;
+  float cycles = WAKE_PULSE_HZ_START * t + (WAKE_PULSE_HZ_END - WAKE_PULSE_HZ_START) * t * t / (2 * totalS);
+  float depth = WAKE_PULSE_DEPTH_START + (WAKE_PULSE_DEPTH_END - WAKE_PULSE_DEPTH_START) * p;
+  float dip = 0.5f - 0.5f * cosf(2 * PI_F * (cycles - floorf(cycles)));  // 0 at the top of each pulse
+  return {WAKE_FULL_LIGHT.h, WAKE_FULL_LIGHT.s * (1 - p), 100 * (1 - depth * dip)};
+}
+
+// Seconds from now until the next time the wall clock reads hour:minute.
+// ponytail: plain 24 h arithmetic, so on the two nights a year the clocks
+// change the light is an hour off; the phone re-sends the time every evening.
+inline int32_t secondsUntilClock(int nowHour, int nowMinute, int nowSecond, int hour, int minute) {
+  int32_t delta = (hour * 3600 + minute * 60) - (nowHour * 3600 + nowMinute * 60 + nowSecond);
+  return delta > 0 ? delta : delta + 86400;
+}
+
+// "07:30" -> hour, minute. False unless it is exactly HH:MM in range.
+inline bool parseClock(const char *s, int &hour, int &minute) {
+  if (strlen(s) != 5 || s[2] != ':') return false;
+  for (int i = 0; i < 5; i++) if (i != 2 && (s[i] < '0' || s[i] > '9')) return false;
+  int h = (s[0] - '0') * 10 + (s[1] - '0'), m = (s[3] - '0') * 10 + (s[4] - '0');
+  if (h > 23 || m > 59) return false;
+  hour = h;
+  minute = m;
+  return true;
 }
 
 // ---------- shimmer: the lamp is never perfectly still ----------
