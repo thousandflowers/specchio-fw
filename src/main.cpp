@@ -18,6 +18,7 @@ static const uint32_t SAVE_DELAY_MS = 3000;  // debounce flash writes
 // A boot counts as good only after HomeKit has been running for a while:
 // its start-up (key generation, ~10 s with watchdogs off) is the riskiest code.
 static const uint32_t STABLE_MS = 120000;
+static const uint32_t STABLE_OFFLINE_MS = 300000;  // HomeKit cannot start without Wi-Fi: do not wait for it forever
 static const uint32_t BLINK_MS = 120;
 static const char *CONFIG_PATH = "/cfg";
 static const char *STATE_PATH = "/state";
@@ -42,7 +43,10 @@ static void bootGuardStart() {
 }
 
 static void bootGuardTick() {
-  if (isBootStable || millis() < STABLE_MS || !(isHomekitUp || safeMode)) return;
+  if (isBootStable) return;
+  uint32_t uptime = millis();
+  bool isProven = uptime >= STABLE_MS && (isHomekitUp || safeMode);
+  if (!isProven && uptime < STABLE_OFFLINE_MS) return;
   isBootStable = true;
   BootGuard g;
   bootGuardMarkStable(g);

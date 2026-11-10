@@ -53,7 +53,8 @@ static void connectVolatile(const char *ssid, const String &psk, int channel, co
 
 static void useSavedCredentials() {
   struct station_config saved;
-  if (!wifi_station_get_config_default(&saved)) return;
+  if (!wifi_station_get_config_default(&saved) || saved.ssid[0] == '\0') return;
+  wifi_station_disconnect();  // the SDK ignores connect() while it is still trying the old config
   wifi_station_set_config_current(&saved);
   wifi_station_connect();
 }
@@ -159,8 +160,11 @@ static void offlineTick(uint32_t now) {
   }
   // Compiled-in credentials: only before the first successful join with this
   // firmware, so a network chosen later by the user is never second-guessed.
+  // Safe mode cannot read `provisioned` (storage is skipped), so there the
+  // fallback is allowed only when nothing is saved at all.
   bool canUseFallback = WIFI_SSID[0] != '\0' && !cfg.provisioned && !hasTriedFallback;
-  if (canUseFallback && (!hasSavedCredentials || offlineMs > FALLBACK_AFTER_MS)) {
+  bool isFallbackDue = !hasSavedCredentials || (!safeMode && offlineMs > FALLBACK_AFTER_MS);
+  if (canUseFallback && isFallbackDue) {
     hasTriedFallback = true;
     isOnFallback = true;
     LOG("trying built-in Wi-Fi credentials");
