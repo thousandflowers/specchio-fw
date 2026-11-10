@@ -72,9 +72,12 @@ def heartbeat(elapsed: float, _total: float) -> Hsv:
     return Hsv(355, 1.0, 0.06 + 0.94 * pulse)
 
 
-def notify(elapsed: float, _total: float) -> Hsv:
-    is_lit = elapsed % 0.6 < 0.25 and elapsed < 1.5
-    return Hsv(200, 0.7, 1.0 if is_lit else 0.15)
+def flashes(hue: float, count: int) -> Callable[[float, float], Hsv]:
+    """Short attention flashes in one colour, then dim: an event, not a mood."""
+    def frame(elapsed: float, _total: float) -> Hsv:
+        is_lit = elapsed % 0.6 < 0.25 and elapsed < 0.6 * count
+        return Hsv(hue, 0.9, 1.0 if is_lit else 0.12)
+    return frame
 
 
 EFFECTS = (
@@ -85,7 +88,8 @@ EFFECTS = (
     Effect("mare", "Mare", 9, sea),
     Effect("tramonto", "Tramonto", 9, sunset),
     Effect("battito", "Battito", 7, heartbeat),
-    Effect("notifica", "Notifica", 3, notify),
+    Effect("notifica", "Notifica", 3, flashes(200, 2)),
+    Effect("claude", "Claude ha finito", 2.4, flashes(25, 3)),
 )
 
 
