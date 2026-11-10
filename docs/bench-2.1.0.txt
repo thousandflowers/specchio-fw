@@ -1,0 +1,4 @@
+# specchio-fw 2.1.0 (phy n, SDK TX power, no modem sleep), measured 2026-11-10 16:15 from the Mac, strip RSSI -91 dBm
+ping: n=200 lost=0 (0%)  median=8ms  p95=13ms  max=19ms
+ping slower than 50ms: 0/200 (0%)
+http: n=40 lost=0 (0%)  median=32ms  p95=50ms  max=65ms
