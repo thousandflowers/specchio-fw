@@ -34,7 +34,7 @@ homekit_accessory_t *accessories[] = {
       HOMEKIT_CHARACTERISTIC(MANUFACTURER, "Athom (custom fw)"),
       HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "000000"),
       HOMEKIT_CHARACTERISTIC(MODEL, "LS5050C"),
-      HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "2.2.1"),
+      HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "2.2.2"),
       HOMEKIT_CHARACTERISTIC(IDENTIFY, identify),
       NULL
     }),
@@ -55,5 +55,5 @@ homekit_server_config_t hk_config = {
   .password = HOMEKIT_CODE,
   // Must go up whenever services are added or removed, or iOS keeps showing
   // the accessory from its cache (stock was 1, v2.0 was 2, v2.2.0 was 3).
-  .config_number = 4,
+  .config_number = 6,
 };
