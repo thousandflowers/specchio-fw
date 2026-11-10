@@ -20,6 +20,9 @@ Measured on the stock firmware (`docs/baseline-stock.txt`, strip at -88..-91 dBm
   access point of the same network (the ESP8266 never roams by itself), so a
   mesh repeater added later is picked up without touching the strip.
 - **HomeKit**: on/off, brightness, hue, saturation. Code in `secrets.ini`.
+- **Modes**, each also a switch in the Home app: Alba (sunrise that leaves the lamp on),
+  Focus (green to red timer with a half-time dip and a red flash at the end), Vibrazione
+  (the idle lamp is never perfectly still), Orologio (two blinks at every change of hour).
 - **Local API** for scripts, plus a one-page UI at `/` with a live signal reading.
 - **Light**: CIE lightness curve (1% is dim, not black), 250 ms fades, state
   restored at power-on before Wi-Fi is up.
@@ -38,6 +41,9 @@ Open on the LAN:
     GET /api/log
     GET /api/set?on=1&hex=ff8000&v=60        also h=0-360, s=0-100
     GET /api/raw?r=1023&g=0&b=0              direct PWM duty, to identify channels
+    GET /api/effect?name=alba&minutes=20     timed effect: alba (sunrise), focus (timer); name=off stops
+    GET /api/flash?hex=ff8000&n=3            coloured blinks over whatever is showing, for events
+    GET /api/set?shimmer=30&hourly=1         idle "vibration" 0-100, tick at every change of hour
     GET /api/roam                            scan for a better access point now
 
 Password protected (`admin` / `OTA_PASS`):
