@@ -2,6 +2,7 @@
 // on the LAN; anything that reconfigures or reflashes needs the password.
 #include <ESP8266HTTPUpdateServer.h>
 #include <ESP8266WebServer.h>
+#include <time.h>
 #include "app.h"
 
 static ESP8266WebServer server(80);
@@ -17,6 +18,8 @@ h1{font-size:22px;font-weight:600;margin:0 0 20px}
 button{font:inherit;width:100%;padding:16px;border:0;border-radius:14px;background:#2a2a2a;color:#eee}
 button.on{background:#f5c451;color:#111}
 input{width:100%;margin:18px 0 0;box-sizing:border-box}
+input[type=checkbox]{width:auto;margin:0 8px 0 0}
+.r{display:flex;gap:10px;margin-top:18px}label{display:block;margin-top:18px;color:#888;font-size:14px}
 input:not([type]),input[type=password]{font:inherit;padding:12px;border:0;border-radius:10px;background:#2a2a2a;color:#eee}
 details{margin:18px 0;color:#888;font-size:14px}details button{margin-top:18px}
 input[type=color]{height:72px;border:0;border-radius:14px;padding:0;background:none}
@@ -26,6 +29,9 @@ a{color:#888}
 <button id=p>…</button>
 <input type=color id=c aria-label=Colore>
 <input type=range id=v min=1 max=100 aria-label=Luminosità>
+<div class=r><button id=fa>Alba</button><button id=ff>Focus</button></div>
+<label>Vibrazione<input type=range id=m min=0 max=100></label>
+<label><input type=checkbox id=o>Tic a ogni cambio d'ora</label>
 <p>Segnale <span id=g>…</span><br><span id=k></span></p>
 <details><summary>Cambia rete Wi-Fi</summary><form method=post action=/api/wifi>
 <input name=ssid placeholder="Nome rete" required maxlength=32 autocapitalize=none>
@@ -35,7 +41,9 @@ a{color:#888}
 </main><script>
 const $=i=>document.getElementById(i);let st={},timer=0,touched=0;
 function show(j){st=j;$('p').textContent=j.on?'Accesa':'Spenta';$('p').className=j.on?'on':'';
-if(Date.now()-touched>1500){$('c').value='#'+j.hex;$('v').value=j.v}
+if(Date.now()-touched>1500){$('c').value='#'+j.hex;$('v').value=j.v;$('m').value=j.shimmer;$('o').checked=j.hourly}
+for(const[b,n,t]of[['fa','alba','Alba'],['ff','focus','Focus']]){const a=j.effect==n;$(b).className=a?'on':'';
+$(b).textContent=a?t+' · '+Math.ceil(j.effect_left_s/60)+' min':t}
 $('g').textContent=j.rssi?j.rssi+' dBm, '+(j.rssi>-67?'buono':j.rssi>-80?'debole':'molto debole'):'non collegata al Wi-Fi';
 $('k').textContent=j.safe_mode?'MODALITÀ SICURA: carica un firmware':j.homekit_paired?'HomeKit associato':'HomeKit da associare'}
 async function set(q){touched=Date.now();show(await(await fetch('/api/set?'+q)).json())}
@@ -43,6 +51,10 @@ function soon(q){touched=Date.now();clearTimeout(timer);timer=setTimeout(()=>set
 $('p').onclick=()=>set('on='+(st.on?0:1));
 $('c').oninput=e=>soon('hex='+e.target.value.slice(1));
 $('v').oninput=e=>soon('v='+e.target.value);
+$('m').oninput=e=>soon('shimmer='+e.target.value);
+$('o').onchange=e=>set('hourly='+(e.target.checked?1:0));
+const fx=n=>fetch('/api/effect?name='+(st.effect==n?'off':n)).then(poll);
+$('fa').onclick=()=>fx('alba');$('ff').onclick=()=>fx('focus');
 async function poll(){try{show(await(await fetch('/api/state')).json())}catch(e){}}
 poll();setInterval(poll,2000)
 </script>)html";
@@ -69,12 +81,16 @@ static void sendState() {
   snprintf(hex, sizeof hex, "%02x%02x%02x", (int)lroundf(c.r * 255), (int)lroundf(c.g * 255),
            (int)lroundf(c.b * 255));
   bool isUp = WiFi.status() == WL_CONNECTED;
-  char buf[720];
+  char clock[6] = "";
+  time_t now = time(nullptr);
+  if (now > 1700000000) strftime(clock, sizeof clock, "%H:%M", localtime(&now));
+  char buf[900];
   snprintf(buf, sizeof buf,
     "{\"on\":%s,\"h\":%s,\"s\":%s,\"v\":%d,\"hex\":\"%s\","
     "\"rssi\":%d,\"ssid\":\"%s\",\"bssid\":\"%s\",\"channel\":%d,\"phy\":\"%c\","
     "\"disconnects\":%lu,\"failed_joins\":%lu,\"last_disconnect\":\"%s\",\"tx_dbm\":%u,"
     "\"pins\":\"%d,%d,%d\",\"boot\":\"%c\",\"fade_ms\":%u,"
+    "\"effect\":\"%s\",\"effect_left_s\":%lu,\"shimmer\":%u,\"hourly\":%s,\"time\":\"%s\","
     "\"homekit_paired\":%s,\"homekit_clients\":%d,\"safe_mode\":%s,"
     "\"heap\":%lu,\"uptime_s\":%lu,\"reset\":\"%s\",\"fw\":\"%s\"}",
     light.on ? "true" : "false", String(light.h, 1).c_str(), String(light.s, 1).c_str(), (int)light.v, hex,
@@ -83,6 +99,7 @@ static void sendState() {
     (unsigned long)netDisconnects, (unsigned long)netFailedJoins,
     netLastReason ? discReasonName(netLastReason) : "", cfg.txDbm,
     cfg.pins[0], cfg.pins[1], cfg.pins[2], cfg.boot, cfg.fadeMs,
+    effectName(), (unsigned long)effectSecondsLeft(), cfg.shimmer, cfg.isHourly ? "true" : "false", clock,
     homekitPaired() ? "true" : "false", homekitClients(), safeMode ? "true" : "false",
     (unsigned long)ESP.getFreeHeap(), millis() / 1000UL, ESP.getResetReason().c_str(), FW_VERSION);
   server.send(200, "application/json", buf);
@@ -100,8 +117,36 @@ static void handleSet() {
   if (server.hasArg("h")) light.h = clampf(server.arg("h").toFloat(), 0, 360);
   if (server.hasArg("s")) light.s = clampf(server.arg("s").toFloat(), 0, 100);
   if (server.hasArg("v")) light.v = clampf(server.arg("v").toFloat(), 1, 100);
-  applyLight();
+  if (server.hasArg("shimmer")) setShimmer(server.arg("shimmer").toInt());
+  if (server.hasArg("hourly")) setHourly(server.arg("hourly") != "0");
+  // Shimmer and the hourly tick are settings: changing only those must not
+  // cancel a running effect the way touching the lamp itself does.
+  bool isLightChange = server.hasArg("on") || server.hasArg("hex") || server.hasArg("h") ||
+                       server.hasArg("s") || server.hasArg("v");
+  if (isLightChange) applyLight();
   sendState();
+}
+
+// /api/effect?name=alba&minutes=20   name=off stops whatever is running
+static void handleEffect() {
+  String name = server.arg("name");
+  if (name == "off") { stopEffect(); return sendState(); }
+  float minutes = server.arg("minutes").toFloat();  // 0 when absent: use the effect's default
+  if (server.hasArg("minutes") && !(minutes >= MIN_EFFECT_MINUTES && minutes <= MAX_EFFECT_MINUTES)) {
+    return sendText(400, "minutes: 0.1 to 180");
+  }
+  if (!startEffect(name.c_str(), minutes)) return sendText(400, "name: alba, focus or off");
+  sendState();
+}
+
+// /api/flash?hex=ff8000&n=3   coloured blinks, then back to what was showing
+static void handleFlash() {
+  float h, s, v;
+  if (!hexToHsv(server.arg("hex").c_str(), h, s, v)) return sendText(400, "hex: 6 hex digits, e.g. ff8000");
+  long count = server.hasArg("n") ? server.arg("n").toInt() : 3;
+  if (count < 1 || count > 10) return sendText(400, "n: 1 to 10");
+  flash(h, s, count);
+  sendText(200, "ok");
 }
 
 // Drives the three outputs directly: used to find which GPIO is which colour.
@@ -166,6 +211,8 @@ void webBegin() {
   server.on("/api/log", handleLog);
   server.on("/api/set", handleSet);
   server.on("/api/raw", handleRaw);
+  server.on("/api/effect", handleEffect);
+  server.on("/api/flash", handleFlash);
   server.on("/api/roam", [] { netRequestRoamScan(); sendText(200, "scan started, see /api/log"); });
   server.on("/api/config", handleConfig);
   server.on("/api/wifi", HTTP_POST, handleWifi);

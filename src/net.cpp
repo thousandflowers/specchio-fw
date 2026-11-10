@@ -230,6 +230,8 @@ void netBegin() {
     LOG("wifi lost: %s (%d)", discReasonName(e.reason), (int)e.reason);
   });
 
+  configTime(TIMEZONE, "pool.ntp.org", "time.google.com");  // wall clock for the hourly tick
+
   hasSavedCredentials = WiFi.SSID().length() > 0;
   if (hasSavedCredentials) WiFi.begin();
   else LOG("no saved Wi-Fi credentials");

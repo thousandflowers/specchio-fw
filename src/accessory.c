@@ -12,6 +12,16 @@ homekit_characteristic_t cha_hue = HOMEKIT_CHARACTERISTIC_(HUE, 0);
 homekit_characteristic_t cha_sat = HOMEKIT_CHARACTERISTIC_(SATURATION, 0);
 homekit_characteristic_t cha_name = HOMEKIT_CHARACTERISTIC_(NAME, "specchio");
 
+// One switch per mode, so each can be used from the Home app, Siri and scenes.
+homekit_characteristic_t cha_fx_alba = HOMEKIT_CHARACTERISTIC_(ON, false);
+homekit_characteristic_t cha_fx_focus = HOMEKIT_CHARACTERISTIC_(ON, false);
+homekit_characteristic_t cha_shimmer = HOMEKIT_CHARACTERISTIC_(ON, false);
+homekit_characteristic_t cha_hourly = HOMEKIT_CHARACTERISTIC_(ON, false);
+
+#define MODE_SWITCH(label, characteristic) \
+  HOMEKIT_SERVICE(SWITCH, .characteristics = (homekit_characteristic_t *[]){ \
+    HOMEKIT_CHARACTERISTIC(NAME, label), characteristic, NULL })
+
 void identify(homekit_value_t _v) {}
 
 homekit_accessory_t *accessories[] = {
@@ -21,13 +31,17 @@ homekit_accessory_t *accessories[] = {
       HOMEKIT_CHARACTERISTIC(MANUFACTURER, "Athom (custom fw)"),
       HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "000000"),
       HOMEKIT_CHARACTERISTIC(MODEL, "LS5050C"),
-      HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "2.1.0"),
+      HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "2.2.0"),
       HOMEKIT_CHARACTERISTIC(IDENTIFY, identify),
       NULL
     }),
     HOMEKIT_SERVICE(LIGHTBULB, .primary = true, .characteristics = (homekit_characteristic_t *[]){
       &cha_on, &cha_bri, &cha_hue, &cha_sat, NULL
     }),
+    MODE_SWITCH("Alba", &cha_fx_alba),
+    MODE_SWITCH("Focus", &cha_fx_focus),
+    MODE_SWITCH("Vibrazione", &cha_shimmer),
+    MODE_SWITCH("Orologio", &cha_hourly),
     NULL
   }),
   NULL
@@ -36,7 +50,7 @@ homekit_accessory_t *accessories[] = {
 homekit_server_config_t hk_config = {
   .accessories = accessories,
   .password = HOMEKIT_CODE,
-  // Stock firmware advertised c#=1. If its pairing survives the flash, a
-  // higher number makes iOS re-read the accessory instead of trusting its cache.
-  .config_number = 2,
+  // Must go up whenever services are added or removed, or iOS keeps showing
+  // the accessory from its cache (stock was 1, v2.0 was 2).
+  .config_number = 3,
 };

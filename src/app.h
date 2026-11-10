@@ -2,12 +2,15 @@
 #pragma once
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
+#include <TZ.h>
 #include "color.h"
+#include "effects.h"
 #include "policy.h"
 
-#define FW_VERSION "2.1.0"
+#define FW_VERSION "2.2.0"
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
+#define TIMEZONE TZ_Europe_Rome  // for the hourly tick
 
 // Per-device secrets come from secrets.ini (gitignored); these are fallbacks
 // so the project still builds without it.
@@ -31,6 +34,8 @@ struct Config {
   uint16_t fadeMs;
   bool provisioned;   // has joined Wi-Fi at least once with this firmware
   uint8_t txDbm;      // max TX power, 0 = leave the SDK default
+  uint8_t shimmer;    // 0-100: how much the idle lamp "vibrates", 0 = still
+  bool isHourly;      // tick the lamp at every change of hour
 };
 
 struct Light { bool on; float h, s, v; };  // HomeKit units: 0-360, 0-100, 0-100
@@ -47,6 +52,13 @@ bool saveConfig();
 void setPins(const int pins[3]);
 void applyLight();                    // fade to `light`, tell HomeKit, schedule a save
 void setRaw(int r, int g, int b);     // direct PWM duty, for wiring tests
+bool startEffect(const char *key, float minutes);  // minutes <= 0: the effect's default
+void stopEffect();
+const char *effectName();             // "" when none is running
+uint32_t effectSecondsLeft();
+void flash(float hue, float saturation, int count);  // coloured blinks over whatever is showing
+void setShimmer(int amount);
+void setHourly(bool isOn);
 void restartClean();                  // intentional reboot: does not count as a crash
 void factoryReset();
 bool homekitPaired();
