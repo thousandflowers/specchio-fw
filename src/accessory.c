@@ -21,7 +21,7 @@ homekit_accessory_t *accessories[] = {
       HOMEKIT_CHARACTERISTIC(MANUFACTURER, "Athom (custom fw)"),
       HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "000000"),
       HOMEKIT_CHARACTERISTIC(MODEL, "LS5050C"),
-      HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "1.0.0"),
+      HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "2.0.0"),
       HOMEKIT_CHARACTERISTIC(IDENTIFY, identify),
       NULL
     }),
@@ -36,4 +36,7 @@ homekit_accessory_t *accessories[] = {
 homekit_server_config_t hk_config = {
   .accessories = accessories,
   .password = HOMEKIT_CODE,
+  // Stock firmware advertised c#=1. If its pairing survives the flash, a
+  // higher number makes iOS re-read the accessory instead of trusting its cache.
+  .config_number = 2,
 };

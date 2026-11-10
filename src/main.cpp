@@ -1,305 +1,285 @@
-// specchio: lean firmware for the Athom LS5050C RGB strip (ESP8266).
-// HomeKit + local HTTP API + web OTA. Wi-Fi tuned for a weak signal:
-// no modem sleep, max TX power, 802.11g by default, fast reconnect.
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266HTTPUpdateServer.h>
+// specchio: firmware for the Athom LS5050C RGB strip controller (ESP8266).
+// Light output, persistence, button, HomeKit glue and the boot-loop guard.
+// Wi-Fi lives in net.cpp, the HTTP API in web.cpp, pure logic in policy.h.
 #include <LittleFS.h>
 #include <arduino_homekit_server.h>
-#include "color.h"
+#include "app.h"
 
-#ifndef OTA_USER
-#define OTA_USER "admin"
-#endif
-#ifndef OTA_PASS
-#define OTA_PASS "specchio"
-#endif
-
-static const char *HOSTNAME = "specchio";
-static const char *SETUP_AP = "specchio-setup";
-static const char *SETUP_AP_PASS = "specchio1";
-static const int BUTTON_PIN = 0;
-static const uint32_t FADE_MS = 250;
-static const uint32_t SAVE_DELAY_MS = 3000;     // debounce flash writes
-static const uint32_t AP_AFTER_MS = 90000;      // offline this long -> setup AP
-static const char *FW_VERSION = "1.0.0";
-
-extern "C" homekit_server_config_t hk_config;
-extern "C" homekit_characteristic_t cha_on, cha_bri, cha_hue, cha_sat;
-
-ESP8266WebServer server(80);
-ESP8266HTTPUpdateServer updater;
-
-struct Light { bool on = true; float h = 30, s = 60, v = 100; } light;
-int pins[3] = {12, 4, 14};  // R,G,B; change via /api/config?pins=
-char phy = 'g';             // b|g|n; /api/config?phy=
-
-float cur[3] = {0, 0, 0}, from[3] = {0, 0, 0}, target[3] = {0, 0, 0};
-uint32_t fadeStart = 0, dirtyAt = 0, offlineSince = 0;
-bool dirty = false, homekitStarted = false, apUp = false, safeMode = false;
-
-// ---------- boot-loop guard ----------
-// No serial adapter here: a crash loop would brick the strip. Count quick
-// reboots in RTC memory; after 3 in a row skip HomeKit, keep web + /update.
-static const uint32_t STABLE_MS = 30000;
-static const uint32_t MAX_QUICK_BOOTS = 3;
-struct BootGuard { uint32_t magic, count; };
-static const uint32_t BOOT_MAGIC = 0x5bec0001;
-bool bootStable = false;
-
-void bootGuardStart() {
-  BootGuard g;
-  ESP.rtcUserMemoryRead(0, (uint32_t *)&g, sizeof g);
-  if (g.magic != BOOT_MAGIC) g = {BOOT_MAGIC, 0};
-  g.count++;
-  safeMode = g.count > MAX_QUICK_BOOTS;
-  ESP.rtcUserMemoryWrite(0, (uint32_t *)&g, sizeof g);
+extern "C" {
+extern homekit_server_config_t hk_config;
+extern homekit_characteristic_t cha_on, cha_bri, cha_hue, cha_sat;
+int homekit_storage_reset();
 }
 
-void bootGuardWatch() {
-  if (bootStable || millis() < STABLE_MS) return;
-  BootGuard g = {BOOT_MAGIC, 0};
-  ESP.rtcUserMemoryWrite(0, (uint32_t *)&g, sizeof g);
-  bootStable = true;
+static const int BUTTON_PIN = 0;
+static const int SPARE_CHANNEL_PIN = 13;     // 4th MOSFET on this board, unused with RGB strips
+static const int PWM_FREQ_HZ = 1000;
+static const uint32_t SAVE_DELAY_MS = 3000;  // debounce flash writes
+// A boot counts as good only after HomeKit has been running for a while:
+// its start-up (key generation, ~10 s with watchdogs off) is the riskiest code.
+static const uint32_t STABLE_MS = 120000;
+static const uint32_t BLINK_MS = 120;
+static const char *CONFIG_PATH = "/cfg";
+static const char *STATE_PATH = "/state";
+
+Config cfg = {{12, 4, 14}, 'g', 'l', 250, false};
+Light light = {true, 30, 60, 100};  // warm white until a saved state is loaded
+EventLog elog;
+bool safeMode = false;
+
+static float cur[3], fadeFrom[3], fadeTo[3];  // perceived level 0..1 per channel
+static uint32_t fadeStart, dirtyAt;
+static bool isFading, isRaw, isDirty, isHomekitUp, isBootStable;
+
+// ---------- boot-loop guard ----------
+static void bootGuardWrite(BootGuard g) { ESP.rtcUserMemoryWrite(0, (uint32_t *)&g, sizeof g); }
+
+static void bootGuardStart() {
+  BootGuard g;
+  ESP.rtcUserMemoryRead(0, (uint32_t *)&g, sizeof g);
+  safeMode = bootGuardEnter(g, ESP.getResetInfoPtr()->reason);
+  bootGuardWrite(g);
+}
+
+static void bootGuardTick() {
+  if (isBootStable || millis() < STABLE_MS || !(isHomekitUp || safeMode)) return;
+  isBootStable = true;
+  BootGuard g;
+  bootGuardMarkStable(g);
+  bootGuardWrite(g);
+}
+
+void restartClean() {
+  BootGuard g;
+  bootGuardMarkClean(g);
+  bootGuardWrite(g);
+  delay(300);  // let the HTTP reply leave
+  ESP.restart();
 }
 
 // ---------- persistence ----------
-void loadConfig() {
-  File f = LittleFS.open("/cfg", "r");
-  if (!f) return;
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (line.startsWith("pins=")) parsePins(line.c_str() + 5, pins);
-    else if (line.startsWith("phy=") && line.length() == 5) phy = line[4];
-  }
+static String readFile(const char *path) {
+  File f = LittleFS.open(path, "r");
+  return f ? f.readString() : String();
+}
+
+// LittleFS reports a failed write only when the file is closed, so the one
+// reliable check is to read it back.
+static bool writeFile(const char *path, const String &text) {
+  File f = LittleFS.open(path, "w");
+  if (!f) return false;
+  f.print(text);
+  f.close();
+  return readFile(path) == text;
+}
+
+static void loadConfig() {
+  String text = readFile(CONFIG_PATH);
+  char v[24];
+  if (kvGet(text.c_str(), "pins", v, sizeof v)) parsePins(v, cfg.pins);
+  if (kvGet(text.c_str(), "phy", v, sizeof v) && isPhy(v[0]) && !v[1]) cfg.phy = v[0];
+  if (kvGet(text.c_str(), "boot", v, sizeof v) && isBootMode(v[0]) && !v[1]) cfg.boot = v[0];
+  if (kvGet(text.c_str(), "fade", v, sizeof v)) cfg.fadeMs = constrain(atoi(v), 0, 5000);
+  if (kvGet(text.c_str(), "prov", v, sizeof v)) cfg.provisioned = v[0] == '1';
 }
 
 bool saveConfig() {
-  File f = LittleFS.open("/cfg", "w");
-  if (!f) return false;
-  f.printf("pins=%d,%d,%d\nphy=%c\n", pins[0], pins[1], pins[2], phy);
-  return true;
+  char text[80];
+  snprintf(text, sizeof text, "pins=%d,%d,%d\nphy=%c\nboot=%c\nfade=%u\nprov=%d\n", cfg.pins[0],
+           cfg.pins[1], cfg.pins[2], cfg.phy, cfg.boot, cfg.fadeMs, cfg.provisioned);
+  return writeFile(CONFIG_PATH, text);
 }
 
-void loadState() {
-  File f = LittleFS.open("/state", "r");
-  if (!f) return;
-  int on = 1;
-  float h, s, v;
-  if (sscanf(f.readString().c_str(), "%d %f %f %f", &on, &h, &s, &v) == 4) {
-    light.on = on != 0; light.h = h; light.s = s; light.v = v;
-  }
+static void loadState() {
+  String text = readFile(STATE_PATH);
+  char v[16];
+  if (kvGet(text.c_str(), "on", v, sizeof v)) light.on = v[0] == '1';
+  if (kvGet(text.c_str(), "h", v, sizeof v)) light.h = clampf(atof(v), 0, 360);
+  if (kvGet(text.c_str(), "s", v, sizeof v)) light.s = clampf(atof(v), 0, 100);
+  if (kvGet(text.c_str(), "v", v, sizeof v)) light.v = clampf(atof(v), 1, 100);
+  if (cfg.boot != 'l') light.on = cfg.boot == '1';
 }
 
-void saveState() {
-  File f = LittleFS.open("/state", "w");
-  if (f) f.printf("%d %.1f %.1f %.0f\n", light.on, light.h, light.s, light.v);
+static void saveState() {
+  char text[64];
+  snprintf(text, sizeof text, "on=%d\nh=%s\ns=%s\nv=%d\n", light.on, String(light.h, 1).c_str(),
+           String(light.s, 1).c_str(), (int)light.v);
+  if (!writeFile(STATE_PATH, text)) LOG("could not save light state");
 }
 
 // ---------- output ----------
-void writePwm() {
-  for (int i = 0; i < 3; i++) analogWrite(pins[i], toDuty(cur[i]));
+static void writePwm() {
+  for (int i = 0; i < 3; i++) analogWrite(cfg.pins[i], toDuty(cur[i]));
 }
 
-void applyLight() {
-  Rgb c = light.on ? hsvToRgb(light.h, light.s, light.v) : Rgb{0, 0, 0};
-  float t[3] = {c.r, c.g, c.b};
-  for (int i = 0; i < 3; i++) { from[i] = cur[i]; target[i] = t[i]; }
-  fadeStart = millis();
-  dirty = true;
-  dirtyAt = millis();
+static void claimPins() {
+  for (int pin : cfg.pins) pinMode(pin, OUTPUT);
+  bool isSpareUsed = false;
+  for (int pin : cfg.pins) isSpareUsed |= pin == SPARE_CHANNEL_PIN;
+  if (!isSpareUsed) { pinMode(SPARE_CHANNEL_PIN, OUTPUT); digitalWrite(SPARE_CHANNEL_PIN, LOW); }
 }
 
-void fadeStep() {
-  float k = (millis() - fadeStart) / (float)FADE_MS;
-  if (k >= 1) k = 1;
-  bool changed = false;
-  for (int i = 0; i < 3; i++) {
-    float n = from[i] + (target[i] - from[i]) * k;
-    if (n != cur[i]) { cur[i] = n; changed = true; }
-  }
-  if (changed) writePwm();
+void setPins(const int pins[3]) {
+  for (int pin : cfg.pins) analogWrite(pin, 0);
+  for (int i = 0; i < 3; i++) cfg.pins[i] = pins[i];
+  claimPins();
+  writePwm();
 }
 
-void notifyHomekit() {
+static void notifyHomekit() {
   cha_on.value.bool_value = light.on;
   cha_bri.value.int_value = (int)light.v;
   cha_hue.value.float_value = light.h;
   cha_sat.value.float_value = light.s;
-  if (!homekitStarted) return;
+  if (!isHomekitUp) return;
   homekit_characteristic_notify(&cha_on, cha_on.value);
   homekit_characteristic_notify(&cha_bri, cha_bri.value);
   homekit_characteristic_notify(&cha_hue, cha_hue.value);
   homekit_characteristic_notify(&cha_sat, cha_sat.value);
 }
 
-// ---------- HomeKit setters ----------
-void setOn(const homekit_value_t v) { cha_on.value = v; light.on = v.bool_value; applyLight(); }
-void setBri(const homekit_value_t v) { cha_bri.value = v; light.v = v.int_value; applyLight(); }
-void setHue(const homekit_value_t v) { cha_hue.value = v; light.h = v.float_value; applyLight(); }
-void setSat(const homekit_value_t v) { cha_sat.value = v; light.s = v.float_value; applyLight(); }
-
-// ---------- Wi-Fi ----------
-WiFiPhyMode_t phyMode() {
-  return phy == 'b' ? WIFI_PHY_MODE_11B : phy == 'n' ? WIFI_PHY_MODE_11N : WIFI_PHY_MODE_11G;
+static void startFade() {
+  Rgb c = light.on ? hsvToRgb(light.h, light.s, light.v) : Rgb{0, 0, 0};
+  float to[3] = {c.r, c.g, c.b};
+  for (int i = 0; i < 3; i++) { fadeFrom[i] = cur[i]; fadeTo[i] = to[i]; }
+  fadeStart = millis();
+  isFading = true;
+  isRaw = false;
+  isDirty = true;
+  dirtyAt = millis();
 }
 
-void startWifi() {
-  WiFi.persistent(true);  // credentials live in the SDK area, which an OTA keeps
-  WiFi.mode(WIFI_STA);
-  WiFi.hostname(HOSTNAME);
-  WiFi.setSleepMode(WIFI_NONE_SLEEP);  // stock fw modem-sleeps: the main source of lag
-  WiFi.setPhyMode(phyMode());          // 11g/11b keep a higher TX power than 11n
-  WiFi.setOutputPower(20.5);
-  WiFi.setAutoReconnect(true);
-  if (WiFi.SSID().length()) WiFi.begin();
-  offlineSince = millis();
-}
-
-void wifiWatch() {
-  if (WiFi.status() == WL_CONNECTED) {
-    offlineSince = millis();
-    if (!homekitStarted && !safeMode) { arduino_homekit_setup(&hk_config); homekitStarted = true; }
-    if (apUp && WiFi.softAPgetStationNum() == 0) { WiFi.softAPdisconnect(true); apUp = false; }
-    return;
-  }
-  if (!apUp && millis() - offlineSince > AP_AFTER_MS) {
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(SETUP_AP, SETUP_AP_PASS);
-    apUp = true;
-  }
-}
-
-// ---------- web ----------
-static const char PAGE[] PROGMEM = R"html(<!doctype html><meta name=viewport content="width=device-width">
-<title>specchio</title><style>body{font:16px -apple-system,sans-serif;max-width:420px;margin:24px auto;padding:0 16px}
-input,button{font:inherit;margin:4px 0}pre{background:#eee;padding:8px;white-space:pre-wrap}</style>
-<h2>specchio</h2>
-<button onclick="go('on=1')">On</button> <button onclick="go('on=0')">Off</button><br>
-<input type=color id=c onchange="go('hex='+c.value.slice(1))"><br>
-<input type=range min=1 max=100 id=v onchange="go('v='+v.value)" style="width:100%">
-<pre id=s></pre>
-<details><summary>Wi-Fi</summary><form method=post action=/api/wifi>
-<input name=ssid placeholder=SSID><br><input name=pass type=password placeholder=password><br><button>Save &amp; reboot</button></form></details>
-<p><a href=/update>Firmware update</a></p>
-<script>
-async function go(q){await fetch('/api/set?'+q);load()}
-async function load(){const j=await (await fetch('/api/state')).json();s.textContent=JSON.stringify(j,null,1);v.value=j.v}
-load();setInterval(load,5000)
-</script>)html";
-
-void sendState() {
-  char buf[400];
-  snprintf(buf, sizeof buf,
-    "{\"on\":%s,\"h\":%.1f,\"s\":%.1f,\"v\":%.0f,\"rssi\":%d,\"ssid\":\"%s\",\"phy\":\"%c\","
-    "\"pins\":\"%d,%d,%d\",\"heap\":%u,\"uptime_s\":%lu,\"homekit_clients\":%d,\"safe_mode\":%s,\"fw\":\"%s\"}",
-    light.on ? "true" : "false", light.h, light.s, light.v, WiFi.RSSI(), WiFi.SSID().c_str(), phy,
-    pins[0], pins[1], pins[2], ESP.getFreeHeap(), millis() / 1000,
-    homekitStarted ? arduino_homekit_connected_clients_count() : 0, safeMode ? "true" : "false", FW_VERSION);
-  server.send(200, "application/json", buf);
-}
-
-void handleSet() {
-  if (server.hasArg("on")) light.on = server.arg("on") != "0";
-  if (server.hasArg("hex")) {
-    float h, s, v;
-    if (!hexToHsv(server.arg("hex").c_str(), h, s, v)) return server.send(400, "text/plain", "bad hex");
-    light.h = h; light.s = s; light.on = true;
-  }
-  if (server.hasArg("h")) light.h = constrain(server.arg("h").toFloat(), 0, 360);
-  if (server.hasArg("s")) light.s = constrain(server.arg("s").toFloat(), 0, 100);
-  if (server.hasArg("v")) light.v = constrain(server.arg("v").toFloat(), 1, 100);
-  applyLight();
+void applyLight() {
+  startFade();
   notifyHomekit();
-  sendState();
 }
 
-void handleConfig() {
-  bool changed = false;
-  if (server.hasArg("pins")) {
-    int p[3];
-    if (!parsePins(server.arg("pins").c_str(), p)) return server.send(400, "text/plain", "pins: 3 of 4,5,12,13,14,15");
-    for (int i = 0; i < 3; i++) { analogWrite(pins[i], 0); pins[i] = p[i]; pinMode(pins[i], OUTPUT); }
-    writePwm();
-    changed = true;
+void setRaw(int r, int g, int b) {
+  int duty[3] = {r, g, b};
+  isRaw = true;
+  isFading = false;
+  for (int i = 0; i < 3; i++) analogWrite(cfg.pins[i], constrain(duty[i], 0, PWM_MAX));
+}
+
+static void fadeTick() {
+  if (!isFading) return;
+  uint32_t elapsed = millis() - fadeStart;
+  float k = cfg.fadeMs == 0 || elapsed >= cfg.fadeMs ? 1.0f : elapsed / (float)cfg.fadeMs;
+  for (int i = 0; i < 3; i++) cur[i] = fadeFrom[i] + (fadeTo[i] - fadeFrom[i]) * k;
+  writePwm();
+  if (k >= 1.0f) isFading = false;
+}
+
+static void blink(int times) {
+  for (int i = 0; i < times; i++) {
+    setRaw(0, 0, 0);
+    delay(BLINK_MS);
+    setRaw(PWM_MAX / 4, PWM_MAX / 4, PWM_MAX / 4);
+    delay(BLINK_MS);
   }
-  if (server.hasArg("phy")) {
-    String m = server.arg("phy");
-    if (m != "b" && m != "g" && m != "n") return server.send(400, "text/plain", "phy: b|g|n");
-    phy = m[0];
-    WiFi.setPhyMode(phyMode());  // takes effect on next (re)connect
-    changed = true;
-  }
-  if (changed && !saveConfig()) return server.send(500, "text/plain", "flash write failed");
-  sendState();
+  startFade();
 }
 
-void handleWifi() {
-  String ssid = server.arg("ssid");
-  if (ssid.isEmpty() || ssid.length() > 32) return server.send(400, "text/plain", "ssid required");
-  server.send(200, "text/plain", "saved, rebooting");
-  delay(200);
-  WiFi.begin(ssid.c_str(), server.arg("pass").c_str());  // persistent=true stores it
-  delay(500);
-  ESP.restart();
+// ---------- HomeKit ----------
+// Setters come from the Home app: update, fade, no echo back to HomeKit.
+static void hkSetOn(const homekit_value_t v) { cha_on.value = v; light.on = v.bool_value; startFade(); }
+static void hkSetBri(const homekit_value_t v) { cha_bri.value = v; light.v = clampf(v.int_value, 0, 100); startFade(); }
+static void hkSetHue(const homekit_value_t v) { cha_hue.value = v; light.h = clampf(v.float_value, 0, 360); startFade(); }
+static void hkSetSat(const homekit_value_t v) { cha_sat.value = v; light.s = clampf(v.float_value, 0, 100); startFade(); }
+
+static void hkEvent(homekit_event_t event) {
+  if (event == HOMEKIT_EVENT_PAIRING_ADDED) LOG("homekit: paired");
+  if (event == HOMEKIT_EVENT_PAIRING_REMOVED) LOG("homekit: pairing removed");
 }
 
-void handleHomekitReset() {
-  server.send(200, "text/plain", "HomeKit pairing erased, rebooting");
+static void homekitStart() {
+  cha_on.setter = hkSetOn;
+  cha_bri.setter = hkSetBri;
+  cha_hue.setter = hkSetHue;
+  cha_sat.setter = hkSetSat;
+  hk_config.on_event = hkEvent;
+  arduino_homekit_setup(&hk_config);
+  isHomekitUp = true;
+  LOG("homekit up, %s", homekitPaired() ? "paired" : "waiting for pairing");
+}
+
+bool homekitPaired() {
+  homekit_server_t *server = arduino_homekit_get_running_server();
+  return server && server->paired;
+}
+
+int homekitClients() { return isHomekitUp ? arduino_homekit_connected_clients_count() : 0; }
+
+void factoryReset() {
+  LOG("factory reset");
   homekit_storage_reset();
-  delay(200);
-  ESP.restart();
-}
-
-void startWeb() {
-  server.on("/", [] { server.send_P(200, "text/html", PAGE); });
-  server.on("/api/state", sendState);
-  server.on("/api/set", handleSet);
-  server.on("/api/config", handleConfig);
-  server.on("/api/wifi", HTTP_POST, handleWifi);
-  server.on("/api/homekit-reset", HTTP_POST, handleHomekitReset);
-  server.on("/api/reboot", HTTP_POST, [] { server.send(200, "text/plain", "rebooting"); delay(200); ESP.restart(); });
-  updater.setup(&server, "/update", OTA_USER, OTA_PASS);  // safety net: always reflashable
-  server.begin();
+  LittleFS.remove(CONFIG_PATH);
+  LittleFS.remove(STATE_PATH);
+  WiFi.persistent(true);
+  WiFi.disconnect();  // with persistent on, this erases the saved credentials
+  restartClean();
 }
 
 // ---------- button ----------
-void buttonWatch() {
-  static bool last = HIGH;
-  static uint32_t changedAt = 0;
-  bool now = digitalRead(BUTTON_PIN);
-  if (now == last || millis() - changedAt < 40) return;
-  changedAt = millis();
-  last = now;
-  if (now == HIGH) { light.on = !light.on; applyLight(); notifyHomekit(); }  // on release
+static void buttonTick() {
+  static bool wasDown = false;
+  static uint32_t downAt = 0;
+  static Press fired = PRESS_NONE;
+  bool isDown = digitalRead(BUTTON_PIN) == LOW;
+  uint32_t now = millis();
+
+  if (isDown && !wasDown) { downAt = now; fired = PRESS_NONE; }
+  Press press = isDown || wasDown ? classifyPress(now - downAt) : PRESS_NONE;
+
+  if (isDown && press == PRESS_SETUP_AP && fired != PRESS_SETUP_AP) {
+    fired = press;
+    blink(1);  // feedback: release now for the setup AP, keep holding to reset
+    netStartSetupAp();
+  } else if (isDown && press == PRESS_FACTORY_RESET) {
+    blink(3);
+    factoryReset();
+  } else if (!isDown && wasDown && fired == PRESS_NONE && press == PRESS_TOGGLE) {
+    light.on = !light.on;
+    applyLight();
+  }
+  wasDown = isDown;
 }
 
 void setup() {
   bootGuardStart();
-  analogWriteRange(PWM_MAX);
-  analogWriteFreq(1000);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  if (!LittleFS.begin()) { LittleFS.format(); LittleFS.begin(); }
-  loadConfig();
-  loadState();
-  for (int i = 0; i < 3; i++) pinMode(pins[i], OUTPUT);
-  applyLight();  // restore last colour immediately, before Wi-Fi
+  analogWriteRange(PWM_MAX);
+  analogWriteFreq(PWM_FREQ_HZ);
+  LOG("boot fw %s: %s", FW_VERSION, ESP.getResetReason().c_str());
+  if (isCrashReset(ESP.getResetInfoPtr()->reason)) LOG("%s", ESP.getResetInfo().c_str());
+
+  if (safeMode) {
+    // Three crashes in a row: skip flash storage and HomeKit, keep the lamp,
+    // the web page and /update so a fixed firmware can be uploaded.
+    LOG("SAFE MODE: storage and HomeKit skipped, upload a firmware at /update");
+  } else {
+    if (!LittleFS.begin()) LOG("storage mount failed, using defaults");
+    loadConfig();
+    loadState();
+  }
+  claimPins();
+  startFade();  // light comes back before Wi-Fi does
+  isDirty = false;
   notifyHomekit();
-  cha_on.setter = setOn;
-  cha_bri.setter = setBri;
-  cha_hue.setter = setHue;
-  cha_sat.setter = setSat;
-  startWifi();
-  startWeb();
+  netBegin();
+  webBegin();
 }
 
 void loop() {
-  bootGuardWatch();
-  wifiWatch();
-  if (homekitStarted) arduino_homekit_loop();
-  server.handleClient();
-  buttonWatch();
-  fadeStep();
-  if (dirty && millis() - dirtyAt > SAVE_DELAY_MS) { saveState(); dirty = false; }
+  bootGuardTick();
+  netTick();
+  if (!safeMode && !isHomekitUp && WiFi.status() == WL_CONNECTED) homekitStart();
+  if (isHomekitUp) arduino_homekit_loop();
+  webTick();
+  buttonTick();
+  fadeTick();
+  if (isDirty && !safeMode && millis() - dirtyAt > SAVE_DELAY_MS) {
+    isDirty = false;
+    saveState();
+  }
 }

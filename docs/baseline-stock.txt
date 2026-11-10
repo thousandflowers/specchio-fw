@@ -1,0 +1,4 @@
+# Stock Athom HomeKit firmware v0.8.5, measured 2026-11-10 15:33 from the Mac, strip RSSI -88..-91 dBm
+ping: n=200 lost=0 (0%)  median=9ms  p95=155ms  max=219ms
+ping slower than 50ms: 54/200 (27%)
+http: n=40 lost=0 (0%)  median=52ms  p95=365ms  max=1028ms

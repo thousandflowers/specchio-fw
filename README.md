@@ -1,26 +1,73 @@
 # specchio-fw
 
-Custom firmware for the Athom LS5050C(-HK) RGB strip on the bedroom mirror.
-Replaces Athom HomeKit fw v0.8.5. Same Arduino core (2.7.4), smaller (536 KB vs 570 KB).
+Firmware for the Athom LS5050C(-HK) RGB strip controller on the bedroom mirror.
+Replaces Athom's HomeKit firmware v0.8.5.
 
-What changed vs stock:
-- Wi-Fi modem sleep off (stock lag source), TX 20.5 dBm, 802.11g default, auto-reconnect
-- HomeKit kept (code `246-81-357`), plus local HTTP API, 250 ms fades, last state restored at power-on
-- Boot-loop guard: 3 quick crashes -> safe mode (no HomeKit, web + `/update` still up)
+## Why
 
-## API (http://specchio.local or the IP)
-- `GET /api/state`
-- `GET /api/set?on=1&hex=ff0000&v=80` (also `h`,`s` 0-360/0-100)
-- `GET /api/config?pins=12,4,14` (R,G,B GPIOs) · `?phy=b|g|n`
-- `POST /api/wifi` (ssid, pass) · `POST /api/homekit-reset` · `POST /api/reboot`
-- `/update` firmware upload, user `admin` pass `specchio`
+Measured on the stock firmware (`docs/baseline-stock.txt`, strip at -88..-91 dBm):
 
-## Recovery
-No Wi-Fi for 90 s -> AP `specchio-setup` (pass `specchio1`), open http://192.168.4.1, set Wi-Fi.
+- 27% of pings took 100-200 ms in an alternating pattern: the radio sleeps
+  between beacons (modem sleep), so every exchange waits for the next one.
+- HTTP requests stalled for 1, 2 and 4 s: lost packets and TCP retransmission.
+- ~17 Wi-Fi reconnects in 14 hours.
+- The web log prints the Wi-Fi password, without authentication.
 
-## Build / flash
+## What it does
+
+- **Wi-Fi**: modem sleep off, 20.5 dBm TX, selectable PHY mode, auto-reconnect.
+  When the signal is weak it scans every 30 min and moves to a clearly stronger
+  access point of the same network (the ESP8266 never roams by itself), so a
+  mesh repeater added later is picked up without touching the strip.
+- **HomeKit**: on/off, brightness, hue, saturation. Code in `secrets.ini`.
+- **Local API** for scripts, plus a one-page UI at `/` with a live signal reading.
+- **Light**: CIE lightness curve (1% is dim, not black), 250 ms fades, state
+  restored at power-on before Wi-Fi is up.
+- **Cannot-brick measures**, since no serial port is wired:
+  - three unrequested reboots in a row (crash, watchdog, out of memory) -> safe mode: no flash storage, no HomeKit;
+    lamp, web page and `/update` still work, setup AP is up;
+  - 90 s offline -> setup AP `specchio-setup` (password = `OTA_PASS`), http://192.168.4.1;
+  - button: short = toggle, 5 s = setup AP (one blink), 15 s = factory reset (three blinks);
+  - `/api/log` and `/api/state` expose reset reason, crash address, Wi-Fi drop reasons.
+
+## API
+
+Open on the LAN:
+
+    GET /api/state
+    GET /api/log
+    GET /api/set?on=1&hex=ff8000&v=60        also h=0-360, s=0-100
+    GET /api/raw?r=1023&g=0&b=0              direct PWM duty, to identify channels
+    GET /api/roam                            scan for a better access point now
+
+Password protected (`admin` / `OTA_PASS`):
+
+    GET  /api/config?pins=12,4,14            GPIOs for R,G,B
+    GET  /api/config?phy=g                   b | g | n, applies after reboot
+    GET  /api/config?boot=last               last | on | off at power-on
+    GET  /api/config?fade=250                ms, 0-5000
+    POST /api/wifi          ssid=..&pass=..
+    POST /api/reboot
+    POST /api/factory-reset                  HomeKit pairing + settings
+    /update                                  firmware upload
+
+## Build, test, flash
+
+    cp secrets.example.ini secrets.ini       # then edit
     pio run
-    curl -u admin:specchio -F firmware=@.pio/build/specchio/firmware.bin http://specchio.local/update
-First flash from stock: `curl -F file=@.pio/build/specchio/firmware.bin http://<ip>/update`
+    c++ -std=c++11 -Wall -Isrc test/test_policy.cpp -o /tmp/t && /tmp/t
+    c++ -std=c++11 -Wall -Isrc test/test_color.cpp  -o /tmp/t && /tmp/t
 
-Test colour logic: `c++ -std=c++17 -Isrc test/test_color.cpp -o /tmp/t && /tmp/t`
+    # from this firmware
+    curl -u admin:$OTA_PASS -F firmware=@.pio/build/specchio/firmware.bin http://specchio.local/update
+    # first time, from the stock Athom firmware (not reversible: Athom does not publish it)
+    curl -F file=@.pio/build/specchio/firmware.bin http://<ip>/update
+
+    python3 tools/bench.py specchio.local    # compare with docs/baseline-stock.txt
+
+## Hardware notes
+
+- ESP8266, 2 MB flash (DOUT), same Arduino core (2.7.4) and flash layout as stock.
+- PWM on GPIO12, GPIO4, GPIO14; button GPIO0; spare MOSFET on GPIO13 (held low).
+  Which GPIO is red or green differs between board revisions: check with
+  `/api/raw`, fix with `/api/config?pins=`.

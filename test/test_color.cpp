@@ -15,11 +15,19 @@ int main() {
   Rgb wrap = hsvToRgb(360, 100, 100);
   assert(near(wrap.r, 1) && near(wrap.g, 0));
 
-  assert(toDuty(0) == 0 && toDuty(1) == PWM_MAX && toDuty(-1) == 0);
-  assert(toDuty(0.5f) > 100 && toDuty(0.5f) < 300);  // gamma: half level is dim duty
+  assert(toDuty(0) == 0 && toDuty(1) == PWM_MAX && toDuty(-1) == 0 && toDuty(2) == PWM_MAX);
+  assert(toDuty(0.5f) > 150 && toDuty(0.5f) < 230);  // half lightness = ~18% duty
+  assert(toDuty(0.01f) >= 1);                         // 1% must still emit light
+  assert(toDuty(0.05f) > toDuty(0.02f));              // low end keeps distinct steps
+  for (int i = 1; i <= 100; i++) assert(toDuty(i / 100.0f) >= toDuty((i - 1) / 100.0f));
+
+  assert(clampf(5, 0, 10) == 5 && clampf(-1, 0, 10) == 0 && clampf(11, 0, 10) == 10);
+  assert(clampf(NAN, 1, 100) == 1);                   // "nan" from the URL must not get through
+  assert(clampf(INFINITY, 0, 360) == 360 && clampf(-INFINITY, 0, 360) == 0);
 
   int p[3];
   assert(parsePins("12,4,14", p) && p[0] == 12 && p[1] == 4 && p[2] == 14);
+  assert(!parsePins("13,5,1", p) && p[0] == 12 && p[1] == 4 && p[2] == 14);  // bad input leaves out untouched
   assert(!parsePins("12,4", p));
   assert(!parsePins("12,4,4", p));     // duplicate
   assert(!parsePins("12,4,1", p));     // GPIO1 = TX, not allowed
