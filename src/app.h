@@ -7,7 +7,7 @@
 #include "effects.h"
 #include "policy.h"
 
-#define FW_VERSION "2.2.0"
+#define FW_VERSION "2.2.1"
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
 #define TIMEZONE TZ_Europe_Rome  // for the hourly tick

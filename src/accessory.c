@@ -18,9 +18,12 @@ homekit_characteristic_t cha_fx_focus = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_shimmer = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_hourly = HOMEKIT_CHARACTERISTIC_(ON, false);
 
+// The Home app (iOS 16+) ignores NAME on a service and shows the accessory
+// name on every tile; CONFIGURED_NAME is the one it actually displays.
 #define MODE_SWITCH(label, characteristic) \
   HOMEKIT_SERVICE(SWITCH, .characteristics = (homekit_characteristic_t *[]){ \
-    HOMEKIT_CHARACTERISTIC(NAME, label), characteristic, NULL })
+    HOMEKIT_CHARACTERISTIC(NAME, label), HOMEKIT_CHARACTERISTIC(CONFIGURED_NAME, label), \
+    characteristic, NULL })
 
 void identify(homekit_value_t _v) {}
 
@@ -31,7 +34,7 @@ homekit_accessory_t *accessories[] = {
       HOMEKIT_CHARACTERISTIC(MANUFACTURER, "Athom (custom fw)"),
       HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "000000"),
       HOMEKIT_CHARACTERISTIC(MODEL, "LS5050C"),
-      HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "2.2.0"),
+      HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "2.2.1"),
       HOMEKIT_CHARACTERISTIC(IDENTIFY, identify),
       NULL
     }),
@@ -51,6 +54,6 @@ homekit_server_config_t hk_config = {
   .accessories = accessories,
   .password = HOMEKIT_CODE,
   // Must go up whenever services are added or removed, or iOS keeps showing
-  // the accessory from its cache (stock was 1, v2.0 was 2).
-  .config_number = 3,
+  // the accessory from its cache (stock was 1, v2.0 was 2, v2.2.0 was 3).
+  .config_number = 4,
 };
