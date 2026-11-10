@@ -15,7 +15,7 @@ Measured on the stock firmware (`docs/baseline-stock.txt`, strip at -88..-91 dBm
 
 ## What it does
 
-- **Wi-Fi**: modem sleep off, 20.5 dBm TX, selectable PHY mode, auto-reconnect.
+- **Wi-Fi**: modem sleep off, continuous reconnect, PHY mode and TX power selectable (defaults as stock).
   When the signal is weak it scans every 30 min and moves to a clearly stronger
   access point of the same network (the ESP8266 never roams by itself), so a
   mesh repeater added later is picked up without touching the strip.
@@ -26,7 +26,7 @@ Measured on the stock firmware (`docs/baseline-stock.txt`, strip at -88..-91 dBm
 - **Cannot-brick measures**, since no serial port is wired:
   - three unrequested reboots in a row (crash, watchdog, out of memory) -> safe mode: no flash storage, no HomeKit;
     lamp, web page and `/update` still work, setup AP is up;
-  - 90 s offline -> setup AP `specchio-setup` (password = `OTA_PASS`), http://192.168.4.1;
+  - 5 min offline -> setup AP `specchio-setup` (password = `OTA_PASS`), http://192.168.4.1;
   - button: short = toggle, 5 s = setup AP (one blink), 15 s = factory reset (three blinks);
   - `/api/log` and `/api/state` expose reset reason, crash address, Wi-Fi drop reasons.
 
@@ -46,6 +46,7 @@ Password protected (`admin` / `OTA_PASS`):
     GET  /api/config?phy=g                   b | g | n, applies after reboot
     GET  /api/config?boot=last               last | on | off at power-on
     GET  /api/config?fade=250                ms, 0-5000
+    GET  /api/config?tx=0                    max TX power in dBm, 0 = SDK default, applies after reboot
     POST /api/wifi          ssid=..&pass=..
     POST /api/reboot
     POST /api/factory-reset                  HomeKit pairing + settings

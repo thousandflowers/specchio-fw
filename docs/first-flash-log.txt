@@ -1,0 +1,9 @@
+# /api/log read through the setup AP after the first flash of v2.0.0 (2026-11-10)
+[     7s] boot fw 2.0.0: Software/System restart
+[    10s] wifi up: AP xx:xx:xx:xx:xx:xx ch13 -89dBm ip 192.0.2.66
+[    19s] homekit up, waiting for pairing
+[    48s] wifi lost: beacon lost (weak signal) (200)
+[   108s] still offline: allowing 802.11b/g/n
+[   138s] setup AP up: specchio-setup -> http://192.168.4.1
+# then offline for 10+ minutes: v2.0.0 switched off SDK auto-reconnect when the
+# setup AP came up and retried once every 30 s (every 5 min with a phone on the AP).

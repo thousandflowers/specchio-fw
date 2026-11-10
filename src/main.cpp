@@ -23,7 +23,9 @@ static const uint32_t BLINK_MS = 120;
 static const char *CONFIG_PATH = "/cfg";
 static const char *STATE_PATH = "/state";
 
-Config cfg = {{12, 4, 14}, 'g', 'l', 250, false};
+// Radio defaults match the stock firmware (802.11b/g/n, SDK TX power): on the
+// first flash a forced 11g mode lost the link within a minute.
+Config cfg = {{12, 4, 14}, 'n', 'l', 250, false, 0};
 Light light = {true, 30, 60, 100};  // warm white until a saved state is loaded
 EventLog elog;
 bool safeMode = false;
@@ -85,12 +87,13 @@ static void loadConfig() {
   if (kvGet(text.c_str(), "boot", v, sizeof v) && isBootMode(v[0]) && !v[1]) cfg.boot = v[0];
   if (kvGet(text.c_str(), "fade", v, sizeof v)) cfg.fadeMs = constrain(atoi(v), 0, 5000);
   if (kvGet(text.c_str(), "prov", v, sizeof v)) cfg.provisioned = v[0] == '1';
+  if (kvGet(text.c_str(), "tx", v, sizeof v)) cfg.txDbm = constrain(atoi(v), 0, MAX_TX_DBM);
 }
 
 bool saveConfig() {
-  char text[80];
-  snprintf(text, sizeof text, "pins=%d,%d,%d\nphy=%c\nboot=%c\nfade=%u\nprov=%d\n", cfg.pins[0],
-           cfg.pins[1], cfg.pins[2], cfg.phy, cfg.boot, cfg.fadeMs, cfg.provisioned);
+  char text[96];
+  snprintf(text, sizeof text, "pins=%d,%d,%d\nphy=%c\nboot=%c\nfade=%u\nprov=%d\ntx=%u\n", cfg.pins[0],
+           cfg.pins[1], cfg.pins[2], cfg.phy, cfg.boot, cfg.fadeMs, cfg.provisioned, cfg.txDbm);
   return writeFile(CONFIG_PATH, text);
 }
 

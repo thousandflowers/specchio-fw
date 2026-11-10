@@ -64,6 +64,7 @@ inline bool bootGuardEnter(BootGuard &g, uint32_t resetReason) {
 }
 
 // ---------- settings ----------
+static const int MAX_TX_DBM = 20;
 inline bool isPhy(char c) { return c && strchr("bgn", c); }
 inline bool isBootMode(char c) { return c && strchr("l10", c); }  // last, on, off
 

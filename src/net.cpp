@@ -1,7 +1,10 @@
-// Wi-Fi link, tuned for a strip that sits at the edge of coverage:
-// radio never sleeps, full TX power, strongest-AP roaming, and a setup AP as
-// last resort. Measured on the stock firmware: modem sleep added 100-200 ms
-// to every other packet and the link dropped ~17 times in 14 hours.
+// Wi-Fi link for a strip that sits at the edge of coverage (-89 dBm).
+//
+// Lessons from the first flash (docs/first-flash-log.txt): at this signal the
+// link drops within a minute of boot and a reconnect can take four minutes.
+// So: the SDK's own continuous reconnect is never switched off just because
+// we are offline, the setup AP waits five minutes, and the radio settings
+// stay at the stock firmware's values unless changed through /api/config.
 //
 // Rule for this file: the credentials saved in flash are only ever written by
 // an explicit user action or after a connection with them has succeeded.
@@ -12,14 +15,13 @@ extern "C" {
 #include <user_interface.h>
 }
 
-static const float TX_POWER_DBM = 20.5f;
 static const uint32_t FALLBACK_AFTER_MS = 30000;    // try compiled-in credentials
 static const uint32_t RESTORE_AFTER_MS = 60000;     // give up on them, widen the PHY mode
-static const uint32_t SETUP_AP_AFTER_MS = 90000;
+static const uint32_t SETUP_AP_AFTER_MS = 5UL * 60 * 1000;
 static const uint32_t SETUP_AP_RETRY_MS = 30000;    // if the AP itself fails to start
 static const uint32_t SETUP_AP_MIN_UP_MS = 5UL * 60 * 1000;
-static const uint32_t STA_RETRY_MS = 30000;         // while the setup AP is up
-static const uint32_t STA_RETRY_BUSY_MS = 5UL * 60 * 1000;  // even if someone is on the AP
+static const uint32_t SETUP_PAUSE_MAX_MS = 5UL * 60 * 1000;  // longest we stay quiet for a setup-page user
+static const uint32_t RECONNECT_KICK_MS = 5UL * 60 * 1000;   // belt and braces on top of SDK auto-reconnect
 static const uint32_t UNPIN_AFTER_MS = 20000;
 static const uint32_t ROAM_CHECK_MS = 30UL * 60 * 1000;
 
@@ -27,17 +29,18 @@ static_assert(sizeof(OTA_PASS) - 1 >= 8 && sizeof(OTA_PASS) - 1 <= 63,
               "OTA_PASS is also the setup AP key: WPA2 needs 8-63 characters");
 
 uint32_t netDisconnects = 0;
+uint32_t netFailedJoins = 0;
 int netLastReason = 0;
 
 static WiFiEventHandler onGotIp, onDisconnected;
-static uint32_t offlineSince, lastRoamCheck, lastStaRetry, apStartedAt, lastApAttempt;
+static uint32_t offlineSince, lastRoamCheck, lastKick, apStartedAt, lastApAttempt, apClientSince;
 static char scanSsid[33];
-static bool isLinkUp, isApUp, isManualReconnect, isScanning, isRoamRequested;
+static bool isLinkUp, isApUp, isReconnectPaused, isScanning, isRoamRequested;
 static bool isPinnedToAp, isOnFallback, hasSavedCredentials;
 static bool hasTriedFallback, hasRestored, hasStartedMdns;
 
 static WiFiPhyMode_t phyMode(char c) {
-  return c == 'b' ? WIFI_PHY_MODE_11B : c == 'n' ? WIFI_PHY_MODE_11N : WIFI_PHY_MODE_11G;
+  return c == 'b' ? WIFI_PHY_MODE_11B : c == 'g' ? WIFI_PHY_MODE_11G : WIFI_PHY_MODE_11N;
 }
 
 // Connect without touching the credentials saved in flash.
@@ -59,6 +62,14 @@ static void useSavedCredentials() {
   wifi_station_connect();
 }
 
+static void setReconnectPaused(bool shouldPause) {
+  if (shouldPause == isReconnectPaused) return;
+  isReconnectPaused = shouldPause;
+  WiFi.setAutoReconnect(!shouldPause);
+  if (!shouldPause) WiFi.begin();
+  LOG(shouldPause ? "someone is on the setup AP: Wi-Fi retries paused" : "Wi-Fi retries resumed");
+}
+
 void netStartSetupAp() {
   uint32_t now = millis();
   apStartedAt = now;  // a repeated request keeps an already running AP alive
@@ -69,13 +80,7 @@ void netStartSetupAp() {
   if (!ok) WiFi.mode(WIFI_STA);  // never leave the SDK's default open AP on air
   WiFi.persistent(true);
   if (!ok) { LOG("setup AP failed to start"); return; }
-
-  // A station that keeps scanning for a missing network makes the AP unusable:
-  // stop auto-reconnect and retry by hand (see offlineTick).
-  WiFi.setAutoReconnect(false);
-  isManualReconnect = true;
   isApUp = true;
-  lastStaRetry = now;
   LOG("setup AP up: " SETUP_AP_SSID " -> http://192.168.4.1");
 }
 
@@ -83,8 +88,6 @@ static void stopSetupAp() {
   WiFi.persistent(false);
   WiFi.softAPdisconnect(true);
   WiFi.persistent(true);
-  WiFi.setAutoReconnect(true);
-  isManualReconnect = false;
   isApUp = false;
   LOG("setup AP down");
 }
@@ -131,8 +134,9 @@ static void roamTick(uint32_t now) {
 }
 
 static void onlineTick(uint32_t now) {
-  offlineSince = now;
+  offlineSince = lastKick = now;
   hasTriedFallback = hasRestored = false;
+  setReconnectPaused(false);
   if (isOnFallback) {  // they work: now, and only now, make them the saved ones
     isOnFallback = false;
     hasSavedCredentials = true;
@@ -162,7 +166,8 @@ static void offlineTick(uint32_t now) {
   // firmware, so a network chosen later by the user is never second-guessed.
   // Safe mode cannot read `provisioned` (storage is skipped), so there the
   // fallback is allowed only when nothing is saved at all.
-  bool canUseFallback = WIFI_SSID[0] != '\0' && !cfg.provisioned && !hasTriedFallback;
+  bool hasFallback = WIFI_SSID[0] != '\0';
+  bool canUseFallback = hasFallback && !cfg.provisioned && !hasTriedFallback;
   bool isFallbackDue = !hasSavedCredentials || (!safeMode && offlineMs > FALLBACK_AFTER_MS);
   if (canUseFallback && isFallbackDue) {
     hasTriedFallback = true;
@@ -182,15 +187,24 @@ static void offlineTick(uint32_t now) {
       WiFi.setPhyMode(WIFI_PHY_MODE_11N);
     }
   }
-  if (!isApUp && offlineMs > SETUP_AP_AFTER_MS && now - lastApAttempt > SETUP_AP_RETRY_MS) netStartSetupAp();
-  if (isManualReconnect) {
-    // Do not disturb someone using the setup page, but never wait forever: a
-    // phone that auto-joins the setup AP must not keep the strip offline.
-    uint32_t wait = WiFi.softAPgetStationNum() ? STA_RETRY_BUSY_MS : STA_RETRY_MS;
-    if (now - lastStaRetry > wait) {
-      lastStaRetry = now;
-      WiFi.begin();  // one attempt with the current credentials
-    }
+
+  // With nothing to connect to there is no point waiting: open the setup AP now.
+  bool hasNothingToJoin = !hasSavedCredentials && !hasFallback;
+  bool isApDue = hasNothingToJoin || offlineMs > SETUP_AP_AFTER_MS;
+  if (!isApUp && isApDue && now - lastApAttempt > SETUP_AP_RETRY_MS) netStartSetupAp();
+
+  // A station hunting for its network makes the setup AP stutter. Go quiet
+  // while someone is using it, but never for long: a phone that auto-joins
+  // the setup AP must not keep the strip offline.
+  bool hasApClient = isApUp && WiFi.softAPgetStationNum() > 0;
+  if (!hasApClient) apClientSince = now;
+  setReconnectPaused(hasApClient && now - apClientSince < SETUP_PAUSE_MAX_MS);
+
+  if (!isReconnectPaused && now - lastKick > RECONNECT_KICK_MS) {
+    lastKick = now;
+    LOG("still offline after %lus, %lu failed joins, last: %s", (unsigned long)(offlineMs / 1000),
+        (unsigned long)netFailedJoins, discReasonName(netLastReason));
+    WiFi.begin();
   }
 }
 
@@ -199,8 +213,8 @@ void netBegin() {
   WiFi.mode(WIFI_STA);
   WiFi.hostname(HOSTNAME);
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
-  WiFi.setPhyMode(phyMode(cfg.phy));
-  WiFi.setOutputPower(TX_POWER_DBM);
+  WiFi.setPhyMode(phyMode(cfg.phy));  // always set: the SDK remembers the last mode in flash
+  if (cfg.txDbm > 0) WiFi.setOutputPower(cfg.txDbm);  // 0 = leave the SDK default, as stock did
   WiFi.setAutoReconnect(true);
 
   onGotIp = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP &e) {
@@ -209,17 +223,17 @@ void netBegin() {
         (int)WiFi.RSSI(), e.ip.toString().c_str());
   });
   onDisconnected = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected &e) {
-    if (!isLinkUp) return;  // fires on every failed retry too: log real drops only
+    netLastReason = e.reason;
+    if (!isLinkUp) { netFailedJoins++; return; }  // a failed retry, not a new drop
     isLinkUp = false;
     netDisconnects++;
-    netLastReason = e.reason;
     LOG("wifi lost: %s (%d)", discReasonName(e.reason), (int)e.reason);
   });
 
   hasSavedCredentials = WiFi.SSID().length() > 0;
   if (hasSavedCredentials) WiFi.begin();
   else LOG("no saved Wi-Fi credentials");
-  offlineSince = lastRoamCheck = millis();
+  offlineSince = lastRoamCheck = lastKick = millis();
   if (safeMode) netStartSetupAp();
 }
 

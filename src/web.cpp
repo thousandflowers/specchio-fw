@@ -16,7 +16,9 @@ main{max-width:380px;margin:0 auto;padding:28px 20px}
 h1{font-size:22px;font-weight:600;margin:0 0 20px}
 button{font:inherit;width:100%;padding:16px;border:0;border-radius:14px;background:#2a2a2a;color:#eee}
 button.on{background:#f5c451;color:#111}
-input{width:100%;margin:18px 0 0}
+input{width:100%;margin:18px 0 0;box-sizing:border-box}
+input:not([type]),input[type=password]{font:inherit;padding:12px;border:0;border-radius:10px;background:#2a2a2a;color:#eee}
+details{margin:18px 0;color:#888;font-size:14px}details button{margin-top:18px}
 input[type=color]{height:72px;border:0;border-radius:14px;padding:0;background:none}
 p{color:#888;font-size:14px;font-variant-numeric:tabular-nums}
 a{color:#888}
@@ -25,12 +27,16 @@ a{color:#888}
 <input type=color id=c aria-label=Colore>
 <input type=range id=v min=1 max=100 aria-label=Luminosità>
 <p>Segnale <span id=g>…</span><br><span id=k></span></p>
+<details><summary>Cambia rete Wi-Fi</summary><form method=post action=/api/wifi>
+<input name=ssid placeholder="Nome rete" required maxlength=32 autocapitalize=none>
+<input name=pass type=password placeholder=Password maxlength=63>
+<button>Salva e riavvia</button><p>Chiede utente (admin) e password del firmware.</p></form></details>
 <p><a href=/api/log>registro</a> · <a href=/api/state>stato</a> · <a href=/update>aggiorna firmware</a></p>
 </main><script>
 const $=i=>document.getElementById(i);let st={},timer=0,touched=0;
 function show(j){st=j;$('p').textContent=j.on?'Accesa':'Spenta';$('p').className=j.on?'on':'';
 if(Date.now()-touched>1500){$('c').value='#'+j.hex;$('v').value=j.v}
-$('g').textContent=j.rssi+' dBm, '+(j.rssi>-67?'buono':j.rssi>-80?'debole':'molto debole');
+$('g').textContent=j.rssi?j.rssi+' dBm, '+(j.rssi>-67?'buono':j.rssi>-80?'debole':'molto debole'):'non collegata al Wi-Fi';
 $('k').textContent=j.safe_mode?'MODALITÀ SICURA: carica un firmware':j.homekit_paired?'HomeKit associato':'HomeKit da associare'}
 async function set(q){touched=Date.now();show(await(await fetch('/api/set?'+q)).json())}
 function soon(q){touched=Date.now();clearTimeout(timer);timer=setTimeout(()=>set(q),120)}
@@ -67,14 +73,15 @@ static void sendState() {
   snprintf(buf, sizeof buf,
     "{\"on\":%s,\"h\":%s,\"s\":%s,\"v\":%d,\"hex\":\"%s\","
     "\"rssi\":%d,\"ssid\":\"%s\",\"bssid\":\"%s\",\"channel\":%d,\"phy\":\"%c\","
-    "\"disconnects\":%lu,\"last_disconnect\":\"%s\","
+    "\"disconnects\":%lu,\"failed_joins\":%lu,\"last_disconnect\":\"%s\",\"tx_dbm\":%u,"
     "\"pins\":\"%d,%d,%d\",\"boot\":\"%c\",\"fade_ms\":%u,"
     "\"homekit_paired\":%s,\"homekit_clients\":%d,\"safe_mode\":%s,"
     "\"heap\":%lu,\"uptime_s\":%lu,\"reset\":\"%s\",\"fw\":\"%s\"}",
     light.on ? "true" : "false", String(light.h, 1).c_str(), String(light.s, 1).c_str(), (int)light.v, hex,
     isUp ? (int)WiFi.RSSI() : 0, jsonSafe(WiFi.SSID()).c_str(), isUp ? WiFi.BSSIDstr().c_str() : "",
     isUp ? (int)WiFi.channel() : 0, cfg.phy,
-    (unsigned long)netDisconnects, netDisconnects ? discReasonName(netLastReason) : "",
+    (unsigned long)netDisconnects, (unsigned long)netFailedJoins,
+    netLastReason ? discReasonName(netLastReason) : "", cfg.txDbm,
     cfg.pins[0], cfg.pins[1], cfg.pins[2], cfg.boot, cfg.fadeMs,
     homekitPaired() ? "true" : "false", homekitClients(), safeMode ? "true" : "false",
     (unsigned long)ESP.getFreeHeap(), millis() / 1000UL, ESP.getResetReason().c_str(), FW_VERSION);
@@ -122,11 +129,14 @@ static void handleConfig() {
   if (server.hasArg("boot") && !boot) return sendText(400, "boot: last, on or off");
   long fade = server.arg("fade").toInt();
   if (server.hasArg("fade") && (fade < 0 || fade > 5000)) return sendText(400, "fade: 0-5000 ms");
+  long tx = server.arg("tx").toInt();
+  if (server.hasArg("tx") && (tx < 0 || tx > MAX_TX_DBM)) return sendText(400, "tx: 0 (default) to 20 dBm");
 
   if (hasPins) setPins(pins);
   if (server.hasArg("phy")) { cfg.phy = phy[0]; LOG("phy set to %c, applies after reboot", cfg.phy); }
   if (boot) cfg.boot = boot;
   if (server.hasArg("fade")) cfg.fadeMs = fade;
+  if (server.hasArg("tx")) { cfg.txDbm = tx; LOG("tx power set to %ld dBm, applies after reboot", tx); }
   if (!safeMode && !saveConfig()) return sendText(500, "could not write config to flash");
   sendState();
 }

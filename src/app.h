@@ -5,7 +5,7 @@
 #include "color.h"
 #include "policy.h"
 
-#define FW_VERSION "2.0.0"
+#define FW_VERSION "2.1.0"
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
 
@@ -30,6 +30,7 @@ struct Config {
   char boot;          // power-on state: 'l' last | '1' on | '0' off
   uint16_t fadeMs;
   bool provisioned;   // has joined Wi-Fi at least once with this firmware
+  uint8_t txDbm;      // max TX power, 0 = leave the SDK default
 };
 
 struct Light { bool on; float h, s, v; };  // HomeKit units: 0-360, 0-100, 0-100
@@ -53,6 +54,7 @@ int homekitClients();
 
 // net.cpp
 extern uint32_t netDisconnects;
+extern uint32_t netFailedJoins;
 extern int netLastReason;
 void netBegin();
 void netTick();
