@@ -6,7 +6,8 @@ after --insist minutes on/off blinks that get faster for --insist-for minutes.
 Stops as soon as the lamp is changed by hand (button, Home app, web page).
 
 The alarm times come from the iPhone, one Shortcuts automation per source:
-  /wake?at=07:00,07:30&src=orologio   every alarm that source has (replaces its list)
+  /wake?at=07:00,07:30&src=orologio   every alarm that source has (replaces its list);
+                                      a POST body works too, any text with times in it
   /ring?src=sleepcycle                an app that only says "ringing now": full light, no sunrise
   /stop                               the alarm was stopped on the phone
 The earliest alarm among all sources is the one that runs.
@@ -22,6 +23,7 @@ network can set the alarm; the real fix is the alarm inside the strip
 import argparse
 import datetime as dt
 import json
+import re
 import subprocess
 import threading
 import urllib.request
@@ -80,6 +82,25 @@ def blink_gap(progress: float) -> float:
     """Seconds between blinks, progress 0..1 through the insisting phase."""
     progress = min(max(progress, 0.0), 1.0)
     return SLOWEST_BLINK_S + (FASTEST_BLINK_S - SLOWEST_BLINK_S) * progress
+
+
+# A clock anywhere in a text: 07:30, 7.30, 7:30 PM. The phone sends its alarms
+# however Shortcuts prints them, so the times are fished out, not expected in a format.
+# In a timestamp (2026-11-12T07:30:00+01:00) the seconds and the zone offset are not clocks.
+CLOCK = re.compile(r"(?<![\d:+\-])([01]?\d|2[0-3])[:.]([0-5]\d)(?!\d)(?:[\s\u202f]*([AaPp])\.?[Mm]\b)?")
+
+
+def find_clocks(text: str) -> list:
+    """Every time of day in the text, as 24-hour HH:MM strings, in order."""
+    found = []
+    for hour, minute, half in CLOCK.findall(text):
+        h = int(hour)
+        if half:
+            if h < 1 or h > 12:
+                continue  # 13:00 PM is not a time
+            h = h % 12 + (12 if half.lower() == "p" else 0)
+        found.append(f"{h:02d}:{minute}")
+    return found
 
 
 def next_alarm(clock: str, now: dt.datetime) -> dt.datetime:
@@ -238,16 +259,25 @@ def serve(plan: Plan, port: int) -> None:
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802 (name fixed by http.server)
+            self.handle_any(b"")
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            self.handle_any(self.rfile.read(min(length, 20000)))
+
+        def handle_any(self, body: bytes) -> None:
             url = urlparse(self.path)
             query = parse_qs(url.query, keep_blank_values=True)
             source = query.get("src", ["telefono"])[0][:24]
-            if url.path == "/wake":  # ?at=07:00,07:30&src=orologio  replaces that source's alarms
-                try:
-                    now = dt.datetime.now()
-                    alarms = [next_alarm(clock, now) for clock in query["at"][0].split(",") if clock.strip()]
-                except (KeyError, ValueError):
-                    return self.answer(400, "at=HH:MM[,HH:MM...]")
-                schedule.set_source(source, alarms)
+            sent = " ".join(query.get("at", []) + [body.decode("utf-8", "replace")]).strip()
+            if sent:
+                say(f"{source} sent: {sent[:300]!r}")
+            if url.path == "/wake":  # every alarm that source has: replaces its list, empty = none
+                clocks = find_clocks(sent)
+                if sent and not clocks:
+                    return self.answer(400, "nessun orario HH:MM trovato in quello che hai mandato")
+                now = dt.datetime.now()
+                schedule.set_source(source, [next_alarm(clock, now) for clock in clocks])
             elif url.path == "/ring":
                 say(f"{source}: ringing now")
                 schedule.ring_now()
@@ -283,6 +313,11 @@ def selftest() -> None:
     assert earliest_after(sources, evening) == evening + dt.timedelta(hours=7)
     assert earliest_after(sources, evening + dt.timedelta(hours=8)) == evening + dt.timedelta(hours=9)
     assert earliest_after(sources, evening + dt.timedelta(days=1)) is None
+    assert find_clocks("07:30,06:45") == ["07:30", "06:45"]
+    assert find_clocks("Sveglia 7.05\nLavoro 23:10") == ["07:05", "23:10"]
+    assert find_clocks("7:30 AM, 12:15 AM, 12:00 PM, 9:45\u202fPM") == ["07:30", "00:15", "12:00", "21:45"]
+    assert find_clocks("2026-11-12T07:30:00+01:00") == ["07:30"]
+    assert find_clocks("niente, 25:00, 7:99, 123:45") == []
     cancelled = threading.Event()
     cancelled.set()
     assert not wait_until(evening + dt.timedelta(days=999), cancelled)
