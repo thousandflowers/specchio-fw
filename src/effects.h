@@ -102,6 +102,27 @@ inline bool parseClock(const char *s, int &hour, int &minute) {
   return true;
 }
 
+// "07:00,07:30" -> the clock that comes soonest from now. The phone sends every
+// alarm it has and the strip keeps the next one. False when the list is empty
+// or any item is not exactly HH:MM.
+inline bool soonestClock(const char *list, int nowHour, int nowMinute, int nowSecond, int &hour, int &minute) {
+  int32_t shortestWait = 0;
+  bool hasAny = false;
+  while (*list) {
+    if (strcspn(list, ",") != 5) return false;
+    char item[6];
+    memcpy(item, list, 5);
+    item[5] = '\0';
+    int h, m;
+    if (!parseClock(item, h, m)) return false;
+    int32_t wait = secondsUntilClock(nowHour, nowMinute, nowSecond, h, m);
+    if (!hasAny || wait < shortestWait) { shortestWait = wait; hour = h; minute = m; hasAny = true; }
+    list += 5;
+    if (*list == ',') list++;
+  }
+  return hasAny;
+}
+
 // ---------- shimmer: the lamp is never perfectly still ----------
 // Two sines with unrelated periods. Works on integer milliseconds so it does
 // not go coarse after days of uptime, as a float seconds counter would.

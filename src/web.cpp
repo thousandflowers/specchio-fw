@@ -153,8 +153,14 @@ static void handleEffect() {
 static void handleWake() {
   if (server.arg("stop") == "1") { acknowledgeWake(); return sendState(); }
   if (server.arg("off") == "1") { cancelWake(); return sendState(); }
+  // The phone syncs its whole alarm list: an empty one means "no alarm any more".
+  if (server.hasArg("at") && server.arg("at").isEmpty()) { cancelWake(); return sendState(); }
   int hour, minute;
-  if (!parseClock(server.arg("at").c_str(), hour, minute)) return sendText(400, "at: HH:MM, e.g. 07:30 (or stop=1, off=1)");
+  time_t now = time(nullptr);
+  struct tm *local = localtime(&now);
+  if (!soonestClock(server.arg("at").c_str(), local->tm_hour, local->tm_min, local->tm_sec, hour, minute)) {
+    return sendText(400, "at: HH:MM or HH:MM,HH:MM,... the soonest is used (or stop=1, off=1)");
+  }
   long lead = server.hasArg("lead") ? server.arg("lead").toInt() : cfg.wakeLeadMin;
   long insist = server.hasArg("insist") ? server.arg("insist").toInt() : cfg.wakeInsistMin;
   if (lead < MIN_WAKE_LEAD_MIN || lead > MAX_WAKE_LEAD_MIN) return sendText(400, "lead: 1-60 minutes");

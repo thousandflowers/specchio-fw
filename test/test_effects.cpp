@@ -75,6 +75,15 @@ static void testWake() {
 
   int h = -1, m = -1;
   assert(parseClock("07:30", h, m) && h == 7 && m == 30);
+  // a list from the phone: the soonest from now wins, whatever the order
+  assert(soonestClock("07:30,06:45,23:10", 22, 0, 0, h, m) && h == 23 && m == 10);
+  assert(soonestClock("07:30,06:45,23:10", 23, 30, 0, h, m) && h == 6 && m == 45);
+  assert(soonestClock("07:30", 8, 0, 0, h, m) && h == 7 && m == 30);
+  assert(soonestClock("07:30,", 8, 0, 0, h, m));          // trailing comma from a joined list
+  assert(!soonestClock("", 8, 0, 0, h, m));
+  assert(!soonestClock("7:30", 8, 0, 0, h, m));           // strict HH:MM
+  assert(!soonestClock("07:30,nope", 8, 0, 0, h, m));
+  assert(!soonestClock("07:30;08:00", 8, 0, 0, h, m));
   assert(parseClock("23:59", h, m) && parseClock("00:00", h, m) && h == 0 && m == 0);
   h = 5; m = 6;
   assert(!parseClock("24:00", h, m) && !parseClock("7:30", h, m) && !parseClock("07-30", h, m));

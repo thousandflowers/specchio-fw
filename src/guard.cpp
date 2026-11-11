@@ -6,6 +6,10 @@
 // firmware asks the bootloader to install it when it has not joined within a
 // minute of boot. The bootloader copies it exactly as it copies an OTA.
 //
+// Probation: the guard watches a firmware only until its first join. From then
+// on that build is proven, and a strip that boots with no Wi-Fi (router still
+// down after a blackout) keeps its firmware and the alarm it holds.
+//
 // Rule for this file: it must not add RAM data. The bug being hunted follows
 // the binary's layout, so the guard keeps its state in RTC memory and its text
 // in flash; a guarded build has the same RAM map as the build it guards.
@@ -23,6 +27,7 @@
 // ESP.restart(), and the guard's own state lives at block 40.
 #ifdef SELF_RESTORE
 #include <ESP8266WebServer.h>
+#include <LittleFS.h>
 #include <MD5Builder.h>
 #include "app.h"
 extern "C" {
@@ -58,6 +63,22 @@ static bool stashHeader(StashHeader &h) {
   if (!ESP.flashRead(STASH_HEADER_AT, (uint32_t *)&h, sizeof h)) return false;
   h.md5[32] = '\0';
   return h.magic == STASH_MAGIC && h.size > 0 && h.size <= STASH_MAX;
+}
+
+// The image CRC the build tool writes next to the bootloader: one number per build.
+static uint32_t buildId() { return *(const uint32_t *)(0x40200000 + 4092); }
+
+// "/proven" holds the id of the last build that joined the network.
+static bool isProven() {
+  if (safeMode) return false;  // storage is not mounted
+  File f = LittleFS.open(String(F("/proven")).c_str(), String(F("r")).c_str());
+  return f && strtoul(f.readString().c_str(), nullptr, 16) == buildId();
+}
+
+static void markProven() {
+  if (safeMode || isProven()) return;
+  File f = LittleFS.open(String(F("/proven")).c_str(), String(F("w")).c_str());
+  if (f) { f.print(String(buildId(), HEX)); f.close(); }
 }
 
 // MD5 of what is really in the stash, as 32 hex characters.
@@ -117,9 +138,9 @@ void guardDescribe(char *out, size_t len) {
   bool isValid = stashHeader(h);
   if (isValid) stashMd5(h.size, actual);
   GuardRtc r = rtcRead();
-  snprintf_P(out, len, PSTR("stash=%d size=%u actual_md5=%s is_known_good=%d tries=%u joined=%u last_stage=%u\n"),
+  snprintf_P(out, len, PSTR("stash=%d size=%u actual_md5=%s is_known_good=%d tries=%u joined=%u last_stage=%u proven=%d build=%08x\n"),
              (int)isValid, (unsigned)(isValid ? h.size : 0), actual, (int)(strcmp_P(actual, PSTR(GOOD_FW_MD5)) == 0),
-             (unsigned)r.tries, (unsigned)r.hasJoined, (unsigned)r.stage);
+             (unsigned)r.tries, (unsigned)r.hasJoined, (unsigned)r.stage, (int)isProven(), (unsigned)buildId());
 }
 
 // Arm the bootloader to install the stash at the next reboot. Returns 0 when
@@ -160,11 +181,12 @@ void guardTick() {
   if (!isUp && millis() < GUARD_GRACE_MS) return;
   GuardRtc r = rtcRead();
   if (isUp) {
-    if (!r.hasJoined || r.tries) { r.hasJoined = 1; r.tries = 0; rtcWrite(r); }
+    if (!r.hasJoined || r.tries) { r.hasJoined = 1; r.tries = 0; rtcWrite(r); markProven(); }
     return;
   }
   // A link lost after a good join is ordinary life at this signal, not a bad firmware.
   if (r.hasJoined || r.tries >= GUARD_MAX_TRIES) return;
+  if (isProven()) { r.tries = GUARD_MAX_TRIES; rtcWrite(r); return; }  // not on probation: leave it alone
   r.tries++;
   rtcWrite(r);
   if (guardRestore() == 0) ESP.restart();
