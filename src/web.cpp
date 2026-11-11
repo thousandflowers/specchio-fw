@@ -295,6 +295,25 @@ void webBegin() {
     delay(200);
     factoryReset();
   });
+#ifdef SELF_RESTORE
+  void guardStashChunk(HTTPUpload &up);  // guard.cpp; needs the web server's types
+  // The known-good image the guard falls back to: upload it, then read it back.
+  auto describeStash = [] {
+    char text[200];
+    guardDescribe(text, sizeof text);
+    server.send(200, String(F("text/plain")), String(text));
+  };
+  server.on(String(F("/api/stash")), HTTP_GET, describeStash);
+  server.on(String(F("/api/stash")), HTTP_POST, describeStash, [] {
+    if (server.authenticate(OTA_USER, OTA_PASS)) guardStashChunk(server.upload());
+  });
+  server.on(String(F("/api/restore")), HTTP_POST, [] {
+    if (!isAuthorized()) return;
+    server.send(200, String(F("text/plain")), String(F("restoring\n")));
+    delay(300);
+    if (guardRestore()) restartClean();
+  });
+#endif
   updater.setup(&server, "/update", OTA_USER, OTA_PASS);
   server.begin();
 }

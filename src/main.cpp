@@ -538,6 +538,9 @@ static void buttonTick() {
 
 void setup() {
   bootGuardStart();
+#ifdef SELF_RESTORE
+  guardBoot();
+#endif
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   analogWriteRange(PWM_MAX);
   analogWriteFreq(PWM_FREQ_HZ);
@@ -561,6 +564,9 @@ void setup() {
 
 void loop() {
   bootGuardTick();
+#ifdef SELF_RESTORE
+  guardTick();
+#endif
   netTick();
   if (!safeMode && !isHomekitUp && WiFi.status() == WL_CONNECTED) homekitStart();
   if (isHomekitUp) arduino_homekit_loop();

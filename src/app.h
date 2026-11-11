@@ -7,7 +7,7 @@
 #include "effects.h"
 #include "policy.h"
 
-#define FW_VERSION "2.4.2"
+#define FW_VERSION "2.4.2g"
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
 #define TIMEZONE TZ_Europe_Rome  // for the hourly tick
@@ -82,5 +82,11 @@ void netStartSetupAp();
 void netRequestRoamScan();
 
 // web.cpp
+#ifdef SELF_RESTORE  // experiment builds: see guard.cpp
+void guardBoot();
+void guardTick();
+bool guardRestore();
+void guardDescribe(char *out, size_t len);
+#endif
 void webBegin();
 void webTick();
