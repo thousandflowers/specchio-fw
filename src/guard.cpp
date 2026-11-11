@@ -1,10 +1,10 @@
-// Experiment builds only (-DSELF_RESTORE).
+// Experiment builds only (-DSELF_RESTORE -DGOOD_FW_MD5=...).
 //
 // The strip has no serial port, and a firmware that cannot join the network
 // needs a person to recover it through the setup AP. With this guard a
-// known-good image is kept in a spare flash region (the "stash") and written
-// back by the firmware itself when it has not joined within a minute of boot.
-// The restore goes through the core's Updater, the same path as every OTA.
+// known-good image is kept at the top of the free flash (the "stash") and the
+// firmware asks the bootloader to install it when it has not joined within a
+// minute of boot. The bootloader copies it exactly as it copies an OTA.
 //
 // Rule for this file: it must not add RAM data. The bug being hunted follows
 // the binary's layout, so the guard keeps its state in RTC memory and its text
@@ -12,34 +12,43 @@
 // No string literals outside PSTR/F, no statics, no LOG.
 //
 // Flash map (2 MB, file system at 0x1E0000):
-//   sketch            [0x000000, 0x098000)   so a guarded sketch must stay below 0x98000
-//   stash header      [0x098000, 0x099000)
-//   stash image       [0x099000, 0x125000)
-//   OTA staging       [0x148000, 0x1E0000)   at most, for a sketch of 0x98000
+//   sketch            [0x000000, 0x098000)   a guarded sketch must stay below 0x98000
+//   web OTA staging   [sketch end + 0x1000, + new image)   so at most up to 0x131000
+//   stash header      [0x153000, 0x154000)
+//   stash image       [0x154000, 0x1E0000)
+//
+// RTC user memory: blocks 0-31 are the bootloader's command (eboot_command).
+// The boot-loop guard in main.cpp writes blocks 0-2, so restartClean() after
+// arming the bootloader erases the command: here the reboot is a plain
+// ESP.restart(), and the guard's own state lives at block 40.
 #ifdef SELF_RESTORE
 #include <ESP8266WebServer.h>
 #include <MD5Builder.h>
-#include <Updater.h>
 #include "app.h"
+extern "C" {
+#include <eboot_command.h>
+}
 
 #define SECTOR 4096u
-#define STASH_HEADER_AT 0x98000u
-#define STASH_DATA_AT 0x99000u
+#define STASH_HEADER_AT 0x153000u
+#define STASH_DATA_AT 0x154000u
 #define STASH_MAX 0x8C000u
-#define STASH_MAGIC 0x57A5E001u
-#define GUARD_MAGIC 0x60A2D001u
-#define GUARD_RTC_BLOCK 8u        // the boot-loop guard owns blocks 0-2
+#define STASH_MAGIC 0x57A5E002u
+#define GUARD_MAGIC 0x60A2D003u
+#define GUARD_RTC_BLOCK 40u
 #define GUARD_GRACE_MS 60000u     // good builds join 3 s after boot
 #define GUARD_MAX_TRIES 2u        // then give up: the setup AP still opens at 5 minutes
 #define COPY_CHUNK 1024u
+#define STAGE_DIED_INSIDE 99u     // still there after a reboot = the attempt never returned
 
 struct StashHeader { uint32_t magic, size; char md5[36]; };
-struct GuardRtc { uint32_t magic, tries, hasJoined; };
+// stage: where the last restore attempt stopped, 0 = bootloader armed.
+struct GuardRtc { uint32_t magic, tries, hasJoined, stage; };
 
 static GuardRtc rtcRead() {
   GuardRtc r;
   bool isOurs = ESP.rtcUserMemoryRead(GUARD_RTC_BLOCK, (uint32_t *)&r, sizeof r) && r.magic == GUARD_MAGIC;
-  if (!isOurs) { r.magic = GUARD_MAGIC; r.tries = 0; r.hasJoined = 0; }
+  if (!isOurs) { r.magic = GUARD_MAGIC; r.tries = 0; r.hasJoined = 0; r.stage = 0; }
   return r;
 }
 
@@ -100,7 +109,7 @@ void guardStashChunk(HTTPUpload &up) {
   }
 }
 
-// What the stash holds, for a human to compare with the md5 of the uploaded file.
+// What the stash holds and how the last restore attempt went.
 void guardDescribe(char *out, size_t len) {
   StashHeader h;
   char actual[33];
@@ -108,27 +117,36 @@ void guardDescribe(char *out, size_t len) {
   bool isValid = stashHeader(h);
   if (isValid) stashMd5(h.size, actual);
   GuardRtc r = rtcRead();
-  snprintf_P(out, len, PSTR("stash=%d size=%u stored_md5=%s actual_md5=%s tries=%u joined=%u\n"),
-             (int)isValid, (unsigned)(isValid ? h.size : 0), isValid ? h.md5 : actual, actual,
-             (unsigned)r.tries, (unsigned)r.hasJoined);
+  snprintf_P(out, len, PSTR("stash=%d size=%u actual_md5=%s is_known_good=%d tries=%u joined=%u last_stage=%u\n"),
+             (int)isValid, (unsigned)(isValid ? h.size : 0), actual, (int)(strcmp_P(actual, PSTR(GOOD_FW_MD5)) == 0),
+             (unsigned)r.tries, (unsigned)r.hasJoined, (unsigned)r.stage);
 }
 
-// Stage the stashed image as an update. True = reboot now and the bootloader installs it.
-bool guardRestore() {
+// Arm the bootloader to install the stash at the next reboot. Returns 0 when
+// armed: the caller must then ESP.restart() without touching RTC memory.
+// Otherwise the step that refused. Only the image whose md5 was compiled in is
+// ever installed: a half-written or wrong stash cannot become the firmware.
+int guardRestore() {
+  GuardRtc r = rtcRead();
+  r.stage = STAGE_DIED_INSIDE;
+  rtcWrite(r);
+
   StashHeader h;
   char actual[33];
-  if (!stashHeader(h) || !stashMd5(h.size, actual) || strcmp(actual, h.md5) != 0) return false;
-  uint32_t *buf = (uint32_t *)malloc(COPY_CHUNK);
-  if (!buf) return false;
-  bool ok = Update.begin(h.size, U_FLASH) && Update.setMD5(h.md5);
-  for (uint32_t at = 0; ok && at < h.size; at += COPY_CHUNK) {
-    uint32_t n = h.size - at < COPY_CHUNK ? h.size - at : COPY_CHUNK;
-    ok = ESP.flashRead(STASH_DATA_AT + at, buf, (n + 3) & ~3u) && Update.write((uint8_t *)buf, n) == n;
-    ESP.wdtFeed();
-    yield();
-  }
-  free(buf);
-  return ok && Update.end();  // end() checks the staged copy against the md5 before arming the bootloader
+  if (!stashHeader(h)) r.stage = 1;
+  else if (!stashMd5(h.size, actual)) r.stage = 2;
+  else if (strcmp_P(actual, PSTR(GOOD_FW_MD5)) != 0) r.stage = 3;
+  else r.stage = 0;
+  rtcWrite(r);
+  if (r.stage != 0) return r.stage;
+
+  eboot_command install;
+  install.action = ACTION_COPY_RAW;
+  install.args[0] = STASH_DATA_AT;  // from
+  install.args[1] = 0;              // to: the sketch
+  install.args[2] = h.size;
+  eboot_command_write(&install);
+  return 0;
 }
 
 void guardBoot() {
@@ -149,6 +167,6 @@ void guardTick() {
   if (r.hasJoined || r.tries >= GUARD_MAX_TRIES) return;
   r.tries++;
   rtcWrite(r);
-  if (guardRestore()) restartClean();
+  if (guardRestore() == 0) ESP.restart();
 }
 #endif

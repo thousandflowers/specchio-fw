@@ -85,7 +85,7 @@ void netRequestRoamScan();
 #ifdef SELF_RESTORE  // experiment builds: see guard.cpp
 void guardBoot();
 void guardTick();
-bool guardRestore();
+int guardRestore();  // 0 = bootloader armed: ESP.restart() now
 void guardDescribe(char *out, size_t len);
 #endif
 void webBegin();

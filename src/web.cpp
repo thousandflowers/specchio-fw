@@ -309,9 +309,12 @@ void webBegin() {
   });
   server.on(String(F("/api/restore")), HTTP_POST, [] {
     if (!isAuthorized()) return;
-    server.send(200, String(F("text/plain")), String(F("restoring\n")));
+    int failedAt = guardRestore();
+    char text[200];
+    guardDescribe(text, sizeof text);
+    server.send(200, String(F("text/plain")), String(text));
     delay(300);
-    if (guardRestore()) restartClean();
+    if (failedAt == 0) ESP.restart();  // not restartClean(): it would erase the bootloader's command
   });
 #endif
   updater.setup(&server, "/update", OTA_USER, OTA_PASS);
