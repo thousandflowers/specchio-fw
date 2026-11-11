@@ -102,23 +102,42 @@ inline bool parseClock(const char *s, int &hour, int &minute) {
   return true;
 }
 
-// "07:00,07:30" -> the clock that comes soonest from now. The phone sends every
-// alarm it has and the strip keeps the next one. False when the list is empty
-// or any item is not exactly HH:MM.
-inline bool soonestClock(const char *list, int nowHour, int nowMinute, int nowSecond, int &hour, int &minute) {
+// The time of day that comes soonest from now among all those written in a
+// text. The phone sends its alarms however Shortcuts prints them ("07:30",
+// "7.30", "7:30 PM", a list, a timestamp), so the times are fished out rather
+// than expected in one format. In 2026-11-12T07:30:00+01:00 the seconds and the
+// zone offset are not clocks, and neither is a dotted date (12.11.2026).
+// False when the text holds no time.
+inline bool soonestClock(const char *text, int nowHour, int nowMinute, int nowSecond, int &hour, int &minute) {
+  auto isDigit = [](char c) { return c >= '0' && c <= '9'; };
+  auto isLetter = [](char c, char lower) { return (c | 0x20) == lower; };
   int32_t shortestWait = 0;
   bool hasAny = false;
-  while (*list) {
-    if (strcspn(list, ",") != 5) return false;
-    char item[6];
-    memcpy(item, list, 5);
-    item[5] = '\0';
-    int h, m;
-    if (!parseClock(item, h, m)) return false;
+  const char *p = text;
+  while (*p) {
+    if (!isDigit(*p)) { p++; continue; }
+    const char *start = p;
+    while (isDigit(*p)) p++;
+    int hourDigits = p - start;
+    bool hasMinutes = (*p == ':' || *p == '.') && isDigit(p[1]) && isDigit(p[2]) && !isDigit(p[3]);
+    bool isDate = hasMinutes && *p == '.' && p[3] == '.' && isDigit(p[4]);
+    bool isOwnNumber = start == text || !strchr(":+-.", start[-1]);
+    if (hourDigits > 2 || !hasMinutes || isDate || !isOwnNumber) continue;  // p is already past these digits
+    int h = hourDigits == 2 ? (start[0] - '0') * 10 + (start[1] - '0') : start[0] - '0';
+    int m = (p[1] - '0') * 10 + (p[2] - '0');
+    p += 3;
+    const char *half = p;
+    while (*half == ' ') half++;
+    if ((uint8_t)half[0] == 0xE2 && (uint8_t)half[1] == 0x80 && (uint8_t)half[2] == 0xAF) half += 3;  // narrow no-break space, as iOS writes "7:30 PM"
+    bool isPm = isLetter(half[0], 'p'), isAm = isLetter(half[0], 'a');
+    bool hasHalf = (isAm || isPm) && (isLetter(half[1], 'm') || (half[1] == '.' && isLetter(half[2], 'm')));
+    if (hasHalf) {
+      if (h < 1 || h > 12) continue;
+      h = h % 12 + (isPm ? 12 : 0);
+    }
+    if (h > 23 || m > 59) continue;
     int32_t wait = secondsUntilClock(nowHour, nowMinute, nowSecond, h, m);
     if (!hasAny || wait < shortestWait) { shortestWait = wait; hour = h; minute = m; hasAny = true; }
-    list += 5;
-    if (*list == ',') list++;
   }
   return hasAny;
 }

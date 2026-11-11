@@ -79,11 +79,20 @@ static void testWake() {
   assert(soonestClock("07:30,06:45,23:10", 22, 0, 0, h, m) && h == 23 && m == 10);
   assert(soonestClock("07:30,06:45,23:10", 23, 30, 0, h, m) && h == 6 && m == 45);
   assert(soonestClock("07:30", 8, 0, 0, h, m) && h == 7 && m == 30);
-  assert(soonestClock("07:30,", 8, 0, 0, h, m));          // trailing comma from a joined list
+  // ...and however the phone happens to write it
+  assert(soonestClock("Sveglia 7.05\nLavoro 23:10", 12, 0, 0, h, m) && h == 23 && m == 10);
+  assert(soonestClock("Sveglia 7.05\nLavoro 23:10", 23, 30, 0, h, m) && h == 7 && m == 5);
+  assert(soonestClock("7:30 AM", 0, 0, 0, h, m) && h == 7 && m == 30);
+  assert(soonestClock("7:30 PM", 0, 0, 0, h, m) && h == 19 && m == 30);
+  assert(soonestClock("12:15 am", 1, 0, 0, h, m) && h == 0 && m == 15);
+  assert(soonestClock("12:00 p.m.", 1, 0, 0, h, m) && h == 12 && m == 0);
+  assert(soonestClock("9:45\xE2\x80\xAFPM", 1, 0, 0, h, m) && h == 21 && m == 45);  // iOS narrow space
+  assert(soonestClock("2026-11-12T07:30:00+01:00", 1, 0, 0, h, m) && h == 7 && m == 30);
+  assert(soonestClock("[{\"time\":\"06:10\"},{\"time\":\"08:00\"}]", 7, 0, 0, h, m) && h == 8 && m == 0);
+  assert(soonestClock("il 12.11.2026 alle 07:30", 1, 0, 0, h, m) && h == 7 && m == 30);
   assert(!soonestClock("", 8, 0, 0, h, m));
-  assert(!soonestClock("7:30", 8, 0, 0, h, m));           // strict HH:MM
-  assert(!soonestClock("07:30,nope", 8, 0, 0, h, m));
-  assert(!soonestClock("07:30;08:00", 8, 0, 0, h, m));
+  assert(!soonestClock("niente, 25:00, 7:99, 123:45, 13:00 PM", 8, 0, 0, h, m));
+  assert(!soonestClock("192.0.2.66", 8, 0, 0, h, m));
   assert(parseClock("23:59", h, m) && parseClock("00:00", h, m) && h == 0 && m == 0);
   h = 5; m = 6;
   assert(!parseClock("24:00", h, m) && !parseClock("7:30", h, m) && !parseClock("07-30", h, m));

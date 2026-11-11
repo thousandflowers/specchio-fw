@@ -154,21 +154,44 @@ static void handleEffect() {
 // /api/wake?at=07:30[&lead=30][&insist=10]   next time the clock reads 07:30
 // /api/wake?stop=1   "I am up": ends a wake-up in progress, lamp stays on
 // /api/wake?off=1    forget the alarm
+// /api/wake            the phone's alarms: ?at=07:30, ?at=07:00,07:30, or a POST
+//                      with any text that has times in it; the soonest is kept,
+//                      and an empty list means "no alarm any more"
+//   ?ring=1            an app that cannot tell its alarm in advance: ringing now
+//   ?stop=1            "I am up": the sequence stops, the lamp stays on
+//   ?off=1             forget the alarm, leave the lamp alone
+//   &lead= &insist=    minutes of sunrise before, minutes before the blinking
 static void handleWake() {
   if (server.arg("stop") == "1") { acknowledgeWake(); return sendState(); }
   if (server.arg("off") == "1") { cancelWake(); return sendState(); }
-  // The phone syncs its whole alarm list: an empty one means "no alarm any more".
-  if (server.hasArg("at") && server.arg("at").isEmpty()) { cancelWake(); return sendState(); }
-  int hour, minute;
-  time_t now = time(nullptr);
-  struct tm *local = localtime(&now);
-  if (!soonestClock(server.arg("at").c_str(), local->tm_hour, local->tm_min, local->tm_sec, hour, minute)) {
-    return sendText(400, "at: HH:MM or HH:MM,HH:MM,... the soonest is used (or stop=1, off=1)");
-  }
   long lead = server.hasArg("lead") ? server.arg("lead").toInt() : cfg.wakeLeadMin;
   long insist = server.hasArg("insist") ? server.arg("insist").toInt() : cfg.wakeInsistMin;
   if (lead < MIN_WAKE_LEAD_MIN || lead > MAX_WAKE_LEAD_MIN) return sendText(400, "lead: 1-60 minutes");
   if (insist < 0 || insist > MAX_WAKE_INSIST_MIN) return sendText(400, "insist: 0-60 minutes, 0 = never");
+
+  time_t now = time(nullptr);
+  int hour, minute;
+  if (server.arg("ring") == "1") {
+    time_t soon = now + 60;  // the coming minute: the sunrise is already under way
+    struct tm *at = localtime(&soon);
+    hour = at->tm_hour;
+    minute = at->tm_min;
+    lead = MIN_WAKE_LEAD_MIN;
+  } else {
+    // Whatever the phone sent, in whichever field: query, form or raw body.
+    String sent;
+    for (int i = 0; i < server.args(); i++) {
+      const String &name = server.argName(i);
+      if (name != "lead" && name != "insist" && name != "src") sent += server.arg(i) + ' ';
+    }
+    sent.trim();
+    bool isSync = server.hasArg("at") || server.method() == HTTP_POST;
+    if (sent.isEmpty() && isSync) { cancelWake(); return sendState(); }
+    struct tm *local = localtime(&now);
+    if (!soonestClock(sent.c_str(), local->tm_hour, local->tm_min, local->tm_sec, hour, minute)) {
+      return sendText(400, "no time found: send at=HH:MM, several, or any text with times in it (or stop=1, off=1, ring=1)");
+    }
+  }
   if (!setWake(hour, minute, lead, insist)) return sendText(503, "the strip has not got the time from the network yet");
   sendState();
 }

@@ -27,13 +27,13 @@ static const uint32_t STABLE_OFFLINE_MS = 300000;  // HomeKit cannot start witho
 static const uint32_t BLINK_MS = 120;
 static const time_t MIN_VALID_EPOCH = 1700000000;  // before this the clock is not set yet
 static const int DEFAULT_SHIMMER = 30;
-// The loop rests this long each pass instead of spinning. Hypothesis under
-// test (not proven): a loop that spins runs code from flash without pause, the
-// flash bus chatters, and at -88 dBm that noise is enough to deafen the radio,
-// more or less depending on where the linker happened to put the hot code.
-// It would explain builds that differ only in layout joining or not, and a
-// blocking scan (loop stopped) seeing the AP that the connect cannot find.
-// /api/spin switches the rest off for a while to measure the difference.
+// The loop rests this long each pass instead of spinning. Measured on the
+// device at -88 dBm with one binary (2.5.1, docs/loop-rest.txt): spinning
+// (22 kHz) lost 19 of 90 requests, resting (940 Hz) lost 0 of 90. Other builds
+// with a spinning loop were worse: some never joined the network, some got an
+// address and went deaf, and which one depended only on code layout. Why a
+// busy loop deafens the radio is not established (flash-bus noise at the
+// edge of coverage is the guess). /api/spin repeats the measurement.
 static const uint32_t LOOP_REST_MS = 1;
 static const uint32_t MAX_SPIN_S = 120;
 static const int DEFAULT_WAKE_LEAD_MIN = 30;    // the ramp length used in dawn-simulation studies
@@ -81,11 +81,14 @@ static int32_t wakeAnchorS;     // seconds from the alarm at the anchor...
 static uint32_t wakeAnchorMs;   // ...and millis() at that moment: smooth time between clock ticks
 
 // ---------- boot-loop guard ----------
-static void bootGuardWrite(BootGuard g) { ESP.rtcUserMemoryWrite(0, (uint32_t *)&g, sizeof g); }
+// RTC user blocks 0-31 are the bootloader's command (an OTA is armed there):
+// writing them after an update is staged cancels it. Everything of ours starts at 32.
+static const uint32_t BOOT_RTC_BLOCK = 32;
+static void bootGuardWrite(BootGuard g) { ESP.rtcUserMemoryWrite(BOOT_RTC_BLOCK, (uint32_t *)&g, sizeof g); }
 
 static void bootGuardStart() {
   BootGuard g;
-  ESP.rtcUserMemoryRead(0, (uint32_t *)&g, sizeof g);
+  ESP.rtcUserMemoryRead(BOOT_RTC_BLOCK, (uint32_t *)&g, sizeof g);
   safeMode = bootGuardEnter(g, ESP.getResetInfoPtr()->reason);
   bootGuardWrite(g);
 }

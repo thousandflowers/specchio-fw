@@ -87,7 +87,7 @@ def blink_gap(progress: float) -> float:
 # A clock anywhere in a text: 07:30, 7.30, 7:30 PM. The phone sends its alarms
 # however Shortcuts prints them, so the times are fished out, not expected in a format.
 # In a timestamp (2026-11-12T07:30:00+01:00) the seconds and the zone offset are not clocks.
-CLOCK = re.compile(r"(?<![\d:+\-])([01]?\d|2[0-3])[:.]([0-5]\d)(?!\d)(?:[\s\u202f]*([AaPp])\.?[Mm]\b)?")
+CLOCK = re.compile(r"(?<![\d:+\-.])([01]?\d|2[0-3])[:.]([0-5]\d)(?!\d)(?!\.\d)(?:[\s\u202f]*([AaPp])\.?[Mm]\b)?")
 
 
 def find_clocks(text: str) -> list:

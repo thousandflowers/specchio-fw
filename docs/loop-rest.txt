@@ -1,0 +1,11 @@
+Loop rest vs spinning loop, 2026-11-11 ~18:20, firmware 2.5.1 (one binary), strip at -88/-90 dBm on channel 13.
+Each line: 45 GET /api/state from the Mac, 3 s timeout, 0.4 s apart. /api/spin?s=45 lets the loop spin, then it rests again by itself.
+
+round 1  SPINNING (loop ~22 kHz)  ok=35 fail=10  median 0.030 s  max 2.67 s
+round 1  RESTING  (loop ~940 Hz)  ok=45 fail=0   median 0.027 s  max 0.09 s
+round 2  SPINNING                 ok=36 fail=9   median 0.030 s  max 0.70 s
+round 2  RESTING                  ok=45 fail=0   median 0.027 s  max 0.04 s
+
+Same evening, same signal, firmware 2.2.3 (spinning loop, older layout): 40 of 40 ok.
+Firmware 2.5.0 (spinning loop): got an address, then about 100 requests in a row unanswered.
+Firmware 2.4.0/2.4.1/2.4.2 (spinning loop): never joined, thousands of attempts.
