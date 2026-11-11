@@ -11,7 +11,7 @@ PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 FW="${1:-$PROJ/.pio/build/specchio/firmware.bin}"
 HOST="${HOST:-192.0.2.66}"
 SKETCH_LIMIT=$((0x98000))   # above this the upload would overwrite the fallback image (see src/guard.cpp)
-WAIT_S=150                  # guard grace 60 s + install + boot, with margin
+WAIT_S=330                  # guard grace 240 s + install + boot, with margin
 
 OTA=$(sed -n "s/.*-DOTA_PASS=[\\\\\"']*\([^\\\\\"']*\).*/\1/p" "$PROJ/secrets.ini" | head -1)
 [ -n "$OTA" ] || { echo "OTA password not found in secrets.ini"; exit 2; }

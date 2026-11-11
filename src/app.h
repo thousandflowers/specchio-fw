@@ -7,7 +7,7 @@
 #include "effects.h"
 #include "policy.h"
 
-#define FW_VERSION "2.6.0"
+#define FW_VERSION "2.6.2"
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
 #define TIMEZONE TZ_Europe_Rome  // for the hourly tick
@@ -39,6 +39,7 @@ struct Config {
   uint32_t wakeAt;        // epoch of the next alarm the phone told us about, 0 = none
   uint8_t wakeLeadMin;    // sunrise starts this long before it
   uint8_t wakeInsistMin;  // pulses start this long after it, 0 = never
+  bool isClaudeOn;        // blink when Claude finishes answering (flashes sent with src=claude)
 };
 
 struct Light { bool on; float h, s, v; };  // HomeKit units: 0-360, 0-100, 0-100
@@ -62,6 +63,7 @@ uint32_t effectSecondsLeft();
 void flash(float hue, float saturation, int count);  // coloured blinks over whatever is showing
 void setShimmer(int amount);
 void setHourly(bool isOn);
+void setClaude(bool isOn);  // lets through or mutes the flashes tagged src=claude
 // Wake-up light for the next alarm. False when the strip does not know the time yet.
 bool setWake(int hour, int minute, int leadMinutes, int insistMinutes);
 void cancelWake();           // forget the alarm, leave the lamp alone
@@ -69,6 +71,7 @@ void acknowledgeWake();      // "I am up": stop the sequence, lamp stays on
 const char *wakePhaseName(); // "" when no alarm is set
 void spinFor(uint32_t seconds);       // experiment: no rest in the main loop for a while
 uint32_t loopsPerSecond();
+String stallReport();                 // which part of the loop kept the others waiting, and for how long
 void restartClean();                  // intentional reboot: does not count as a crash
 void factoryReset();
 bool homekitPaired();

@@ -17,6 +17,7 @@ homekit_characteristic_t cha_fx_alba = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_fx_focus = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_shimmer = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_hourly = HOMEKIT_CHARACTERISTIC_(ON, false);
+homekit_characteristic_t cha_claude = HOMEKIT_CHARACTERISTIC_(ON, false);
 
 // The Home app (iOS 16+) ignores NAME on a service and shows the accessory
 // name on every tile; CONFIGURED_NAME is the one it actually displays.
@@ -45,6 +46,7 @@ homekit_accessory_t *accessories[] = {
     MODE_SWITCH("Focus", &cha_fx_focus),
     MODE_SWITCH("Vibrazione", &cha_shimmer),
     MODE_SWITCH("Orologio", &cha_hourly),
+    MODE_SWITCH("Claude", &cha_claude),
     NULL
   }),
   NULL
@@ -54,6 +56,7 @@ homekit_server_config_t hk_config = {
   .accessories = accessories,
   .password = HOMEKIT_CODE,
   // Must go up whenever services are added or removed, or iOS keeps showing
-  // the accessory from its cache (stock was 1, v2.0 was 2, v2.2.0 was 3).
-  .config_number = 6,
+  // the accessory from its cache (stock was 1, v2.0 was 2, v2.2.0 was 3, the
+  // Claude switch in 2.6.1 made it 7).
+  .config_number = 7,
 };

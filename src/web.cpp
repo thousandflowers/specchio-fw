@@ -32,6 +32,7 @@ a{color:#888}
 <div class=r><button id=fa>Alba</button><button id=ff>Focus</button></div>
 <label>Vibrazione<input type=range id=m min=0 max=100></label>
 <label><input type=checkbox id=o>Tic a ogni cambio d'ora</label>
+<label><input type=checkbox id=q>Lampeggia quando Claude finisce</label>
 <label>Sveglia: l'alba parte prima, la luce insiste dopo<input type=time id=w></label>
 <p>Segnale <span id=g>…</span><br><span id=k></span></p>
 <details><summary>Cambia rete Wi-Fi</summary><form method=post action=/api/wifi>
@@ -42,7 +43,7 @@ a{color:#888}
 </main><script>
 const $=i=>document.getElementById(i);let st={},timer=0,touched=0;
 function show(j){st=j;$('p').textContent=j.on?'Accesa':'Spenta';$('p').className=j.on?'on':'';
-if(Date.now()-touched>1500){$('c').value='#'+j.hex;$('v').value=j.v;$('m').value=j.shimmer;$('o').checked=j.hourly;
+if(Date.now()-touched>1500){$('c').value='#'+j.hex;$('v').value=j.v;$('m').value=j.shimmer;$('o').checked=j.hourly;$('q').checked=j.claude;
 if(document.activeElement!=$('w'))$('w').value=j.wake}
 for(const[b,n,t]of[['fa','alba','Alba'],['ff','focus','Focus']]){const a=j.effect==n;$(b).className=a?'on':'';
 $(b).textContent=a?t+' · '+Math.ceil(j.effect_left_s/60)+' min':t}
@@ -55,6 +56,7 @@ $('c').oninput=e=>soon('hex='+e.target.value.slice(1));
 $('v').oninput=e=>soon('v='+e.target.value);
 $('m').oninput=e=>soon('shimmer='+e.target.value);
 $('o').onchange=e=>set('hourly='+(e.target.checked?1:0));
+$('q').onchange=e=>set('claude='+(e.target.checked?1:0));
 $('w').onchange=e=>fetch('/api/wake?'+(e.target.value?'at='+e.target.value:'off=1')).then(poll);
 const fx=n=>fetch('/api/effect?name='+(st.effect==n?'off':n)).then(poll);
 $('fa').onclick=()=>fx('alba');$('ff').onclick=()=>fx('focus');
@@ -96,7 +98,7 @@ static void sendState() {
     "\"rssi\":%d,\"ssid\":\"%s\",\"bssid\":\"%s\",\"channel\":%d,\"phy\":\"%c\","
     "\"disconnects\":%lu,\"failed_joins\":%lu,\"last_disconnect\":\"%s\",\"tx_dbm\":%u,"
     "\"pins\":\"%d,%d,%d\",\"boot\":\"%c\",\"fade_ms\":%u,"
-    "\"effect\":\"%s\",\"effect_left_s\":%lu,\"shimmer\":%u,\"hourly\":%s,\"time\":\"%s\","
+    "\"effect\":\"%s\",\"effect_left_s\":%lu,\"shimmer\":%u,\"hourly\":%s,\"claude\":%s,\"time\":\"%s\","
     "\"wake\":\"%s\",\"wake_phase\":\"%s\",\"wake_lead_min\":%u,\"wake_insist_min\":%u,"
     "\"homekit_paired\":%s,\"homekit_clients\":%d,\"safe_mode\":%s,"
     "\"heap\":%lu,\"uptime_s\":%lu,\"reset\":\"%s\",\"fw\":\"%s\"}",
@@ -106,7 +108,8 @@ static void sendState() {
     (unsigned long)netDisconnects, (unsigned long)netFailedJoins,
     netLastReason ? discReasonName(netLastReason) : "", cfg.txDbm,
     cfg.pins[0], cfg.pins[1], cfg.pins[2], cfg.boot, cfg.fadeMs,
-    effectName(), (unsigned long)effectSecondsLeft(), cfg.shimmer, cfg.isHourly ? "true" : "false", clock,
+    effectName(), (unsigned long)effectSecondsLeft(), cfg.shimmer, cfg.isHourly ? "true" : "false",
+    cfg.isClaudeOn ? "true" : "false", clock,
     wake, wakePhaseName(), cfg.wakeLeadMin, cfg.wakeInsistMin,
     homekitPaired() ? "true" : "false", homekitClients(), safeMode ? "true" : "false",
     (unsigned long)ESP.getFreeHeap(), millis() / 1000UL, ESP.getResetReason().c_str(), FW_VERSION);
@@ -131,6 +134,7 @@ static void handleSet() {
   if (server.hasArg("v")) light.v = clampf(server.arg("v").toFloat(), 1, 100);
   if (server.hasArg("shimmer")) setShimmer(server.arg("shimmer").toInt());
   if (server.hasArg("hourly")) setHourly(server.arg("hourly") != "0");
+  if (server.hasArg("claude")) setClaude(server.arg("claude") != "0");
   // Shimmer and the hourly tick are settings: changing only those must not
   // cancel a running effect the way touching the lamp itself does.
   bool isLightChange = server.hasArg("on") || server.hasArg("hex") || server.hasArg("h") ||
@@ -197,7 +201,9 @@ static void handleWake() {
 }
 
 // /api/flash?hex=ff8000&n=3   coloured blinks, then back to what was showing
+//   &src=claude               sent when Claude finishes: only shown while the "Claude" switch is on
 static void handleFlash() {
+  if (server.arg("src") == "claude" && !cfg.isClaudeOn) return sendText(200, "muted: the Claude switch is off");
   float h, s, v;
   if (!hexToHsv(server.arg("hex").c_str(), h, s, v)) return sendText(400, "hex: 6 hex digits, e.g. ff8000");
   long count = server.hasArg("n") ? server.arg("n").toInt() : 3;
@@ -316,9 +322,9 @@ void webBegin() {
   server.on("/api/wake", handleWake);
   server.on("/api/spin", [] {  // ?s=30 starts, ?s=0 stops, no argument just reports; see LOOP_REST_MS
     if (server.hasArg("s")) spinFor(server.arg("s").toInt() > 0 ? server.arg("s").toInt() : 0);
-    char text[40];
-    snprintf(text, sizeof text, "loop_hz=%lu", (unsigned long)loopsPerSecond());
-    sendText(200, text);
+    String text = "loop_hz=" + String(loopsPerSecond()) + " uptime_s=" + String(millis() / 1000) +
+                  " homekit_clients=" + String(homekitClients()) + "\n" + stallReport();
+    sendText(200, text.c_str());
   });
   server.on("/api/roam", [] { netRequestRoamScan(); sendText(200, "scan started, see /api/log"); });
   server.on("/api/config", handleConfig);

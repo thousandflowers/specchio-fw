@@ -11,7 +11,7 @@
 extern "C" {
 extern homekit_server_config_t hk_config;
 extern homekit_characteristic_t cha_on, cha_bri, cha_hue, cha_sat;
-extern homekit_characteristic_t cha_fx_alba, cha_fx_focus, cha_shimmer, cha_hourly;
+extern homekit_characteristic_t cha_fx_alba, cha_fx_focus, cha_shimmer, cha_hourly, cha_claude;
 int homekit_storage_reset();
 }
 
@@ -45,7 +45,7 @@ static const char *STATE_PATH = "/state";
 
 // Radio defaults match the stock firmware (802.11b/g/n, SDK TX power): on the
 // first flash a forced 11g mode lost the link within a minute.
-Config cfg = {{12, 4, 14}, 'n', 'l', 250, false, 0, 0, false, 0, DEFAULT_WAKE_LEAD_MIN, DEFAULT_WAKE_INSIST_MIN};
+Config cfg = {{12, 4, 14}, 'n', 'l', 250, false, 0, 0, false, 0, DEFAULT_WAKE_LEAD_MIN, DEFAULT_WAKE_INSIST_MIN, false};
 Light light = {true, 30, 60, 100};  // warm white until a saved state is loaded
 EventLog elog;
 bool safeMode = false;
@@ -77,6 +77,12 @@ static uint32_t pulseStartedAt;
 static bool isPulsing, isRaw, isDirty, isHomekitUp, isBootStable;
 static WakePhase wakeState = WAKE_WAITING;
 static uint32_t spinUntil, loopPasses, loopsLastSecond, loopCountedAt;
+// While one part of the loop is busy nothing else runs: no web answers, no
+// button. These counters let a strip that went silent say afterwards who it was.
+static const uint32_t STALL_MS = 100;        // counted
+static const uint32_t LONG_STALL_MS = 1500;  // also written in the log
+struct Stall { const char *who; uint32_t count, totalMs, longestMs; };
+static Stall homekitStall = {"homekit", 0, 0, 0}, webStall = {"web", 0, 0, 0};
 static int32_t wakeAnchorS;     // seconds from the alarm at the anchor...
 static uint32_t wakeAnchorMs;   // ...and millis() at that moment: smooth time between clock ticks
 
@@ -139,17 +145,19 @@ static void loadConfig() {
   if (kvGet(text.c_str(), "tx", v, sizeof v)) cfg.txDbm = constrain(atoi(v), 0, MAX_TX_DBM);
   if (kvGet(text.c_str(), "shimmer", v, sizeof v)) cfg.shimmer = constrain(atoi(v), 0, 100);
   if (kvGet(text.c_str(), "hourly", v, sizeof v)) cfg.isHourly = v[0] == '1';
+  if (kvGet(text.c_str(), "claude", v, sizeof v)) cfg.isClaudeOn = v[0] == '1';
   if (kvGet(text.c_str(), "wake", v, sizeof v)) cfg.wakeAt = strtoul(v, nullptr, 10);
   if (kvGet(text.c_str(), "wlead", v, sizeof v)) cfg.wakeLeadMin = constrain(atoi(v), MIN_WAKE_LEAD_MIN, MAX_WAKE_LEAD_MIN);
   if (kvGet(text.c_str(), "winsist", v, sizeof v)) cfg.wakeInsistMin = constrain(atoi(v), 0, MAX_WAKE_INSIST_MIN);
 }
 
 bool saveConfig() {
-  char text[176];
+  char text[192];
   snprintf(text, sizeof text,
-           "pins=%d,%d,%d\nphy=%c\nboot=%c\nfade=%u\nprov=%d\ntx=%u\nshimmer=%u\nhourly=%d\nwake=%lu\nwlead=%u\nwinsist=%u\n",
+           "pins=%d,%d,%d\nphy=%c\nboot=%c\nfade=%u\nprov=%d\ntx=%u\nshimmer=%u\nhourly=%d\nwake=%lu\nwlead=%u\nwinsist=%u\nclaude=%d\n",
            cfg.pins[0], cfg.pins[1], cfg.pins[2], cfg.phy, cfg.boot, cfg.fadeMs, cfg.provisioned,
-           cfg.txDbm, cfg.shimmer, cfg.isHourly, (unsigned long)cfg.wakeAt, cfg.wakeLeadMin, cfg.wakeInsistMin);
+           cfg.txDbm, cfg.shimmer, cfg.isHourly, (unsigned long)cfg.wakeAt, cfg.wakeLeadMin, cfg.wakeInsistMin,
+           cfg.isClaudeOn);
   return writeFile(CONFIG_PATH, text);
 }
 
@@ -301,6 +309,12 @@ void setShimmer(int amount) {
 void setHourly(bool isOn) {
   cfg.isHourly = isOn;
   syncSwitch(&cha_hourly, isOn);
+  saveConfigOrLog();
+}
+
+void setClaude(bool isOn) {
+  cfg.isClaudeOn = isOn;
+  syncSwitch(&cha_claude, isOn);
   saveConfigOrLog();
 }
 
@@ -481,6 +495,7 @@ static void hkSetShimmer(const homekit_value_t v) {
 }
 
 static void hkSetHourly(const homekit_value_t v) { setHourly(v.bool_value); }
+static void hkSetClaude(const homekit_value_t v) { setClaude(v.bool_value); }
 
 static void hkEvent(homekit_event_t event) {
   if (event == HOMEKIT_EVENT_PAIRING_ADDED) LOG("homekit: paired");
@@ -495,8 +510,10 @@ static void homekitStart() {
   for (const FxDef &def : EFFECTS) def.homekitSwitch->setter_ex = hkSetEffect;
   cha_shimmer.setter = hkSetShimmer;
   cha_hourly.setter = hkSetHourly;
+  cha_claude.setter = hkSetClaude;
   cha_shimmer.value.bool_value = cfg.shimmer > 0;
   cha_hourly.value.bool_value = cfg.isHourly;
+  cha_claude.value.bool_value = cfg.isClaudeOn;
   hk_config.on_event = hkEvent;
   arduino_homekit_setup(&hk_config);
   isHomekitUp = true;
@@ -549,6 +566,27 @@ static void buttonTick() {
   wasDown = isDown;
 }
 
+static void noteStall(Stall &stall, uint32_t startedAt) {
+  uint32_t took = millis() - startedAt;
+  if (took < STALL_MS) return;
+  stall.count++;
+  stall.totalMs += took;
+  if (took > stall.longestMs) stall.longestMs = took;
+  if (took >= LONG_STALL_MS) LOG("%s kept the loop busy %lu ms", stall.who, (unsigned long)took);
+}
+
+// "homekit: 12 stalls, 8400 ms in all, longest 2100 ms" for each part that is timed.
+String stallReport() {
+  String out;
+  for (const Stall *stall : {&homekitStall, &webStall}) {
+    char line[80];
+    snprintf(line, sizeof line, "%s: %lu stalls, %lu ms in all, longest %lu ms\n", stall->who,
+             (unsigned long)stall->count, (unsigned long)stall->totalMs, (unsigned long)stall->longestMs);
+    out += line;
+  }
+  return out;
+}
+
 void setup() {
   bootGuardStart();
 #ifdef SELF_RESTORE
@@ -582,8 +620,12 @@ void loop() {
 #endif
   netTick();
   if (!safeMode && !isHomekitUp && WiFi.status() == WL_CONNECTED) homekitStart();
+  uint32_t startedAt = millis();
   if (isHomekitUp) arduino_homekit_loop();
+  noteStall(homekitStall, startedAt);
+  startedAt = millis();
   webTick();
+  noteStall(webStall, startedAt);
   buttonTick();
   clockTick();
   renderTick();

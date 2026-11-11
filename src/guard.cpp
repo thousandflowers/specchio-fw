@@ -7,8 +7,9 @@
 // minute of boot. The bootloader copies it exactly as it copies an OTA.
 //
 // Probation: the guard watches a firmware only until it has answered a request
-// from the home network. An address is not proof: 2.3.x and 2.5.0 got one and
-// still could not be reached. From then on that build is proven, and a strip
+// from the home network, or has a HomeKit controller connected (data flowed
+// both ways). An address is not proof: 2.3.x and 2.5.0 got one and still could
+// not be reached. From then on that build is proven, and a strip
 // that boots with no Wi-Fi (router still down after a blackout) keeps its
 // firmware and the alarm it holds. tools/try_fw.sh does the asking.
 //
@@ -44,7 +45,7 @@ extern "C" {
 #define STASH_MAGIC 0x57A5E002u
 #define GUARD_MAGIC 0x60A2D003u
 #define GUARD_RTC_BLOCK 40u
-#define GUARD_GRACE_MS 90000u     // good builds answer within 15 s of boot
+#define GUARD_GRACE_MS 240000u    // HomeKit controllers reconnecting can keep a good build silent for 2-3 minutes
 #define GUARD_MAX_TRIES 2u        // then give up: the setup AP still opens at 5 minutes
 #define COPY_CHUNK 1024u
 #define STAGE_DIED_INSIDE 99u     // still there after a reboot = the attempt never returned
@@ -197,6 +198,9 @@ void guardTick() {
     wifi_station_set_reconnect_policy(false);
     wifi_station_disconnect();
   }
+#endif
+#ifndef GUARD_SELFTEST
+  if (homekitClients() > 0) guardReached();
 #endif
   if (millis() < GUARD_GRACE_MS) return;
   GuardRtc r = rtcRead();
