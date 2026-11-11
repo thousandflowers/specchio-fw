@@ -111,6 +111,10 @@ static void sendState() {
     homekitPaired() ? "true" : "false", homekitClients(), safeMode ? "true" : "false",
     (unsigned long)ESP.getFreeHeap(), millis() / 1000UL, ESP.getResetReason().c_str(), FW_VERSION);
   server.send(200, "application/json", buf);
+#if defined(SELF_RESTORE) && !defined(GUARD_SELFTEST)
+  // Answered someone on the home network (not on our own setup AP): reachable.
+  if (server.client().localIP() != WiFi.softAPIP()) guardReached();
+#endif
 }
 
 static void handleSet() {
@@ -287,6 +291,12 @@ void webBegin() {
   server.on("/api/effect", handleEffect);
   server.on("/api/flash", handleFlash);
   server.on("/api/wake", handleWake);
+  server.on("/api/spin", [] {  // ?s=30 starts, ?s=0 stops, no argument just reports; see LOOP_REST_MS
+    if (server.hasArg("s")) spinFor(server.arg("s").toInt() > 0 ? server.arg("s").toInt() : 0);
+    char text[40];
+    snprintf(text, sizeof text, "loop_hz=%lu", (unsigned long)loopsPerSecond());
+    sendText(200, text);
+  });
   server.on("/api/roam", [] { netRequestRoamScan(); sendText(200, "scan started, see /api/log"); });
   server.on("/api/config", handleConfig);
   server.on("/api/wifi", HTTP_POST, handleWifi);

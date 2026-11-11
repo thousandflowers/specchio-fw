@@ -27,6 +27,15 @@ static const uint32_t STABLE_OFFLINE_MS = 300000;  // HomeKit cannot start witho
 static const uint32_t BLINK_MS = 120;
 static const time_t MIN_VALID_EPOCH = 1700000000;  // before this the clock is not set yet
 static const int DEFAULT_SHIMMER = 30;
+// The loop rests this long each pass instead of spinning. Hypothesis under
+// test (not proven): a loop that spins runs code from flash without pause, the
+// flash bus chatters, and at -88 dBm that noise is enough to deafen the radio,
+// more or less depending on where the linker happened to put the hot code.
+// It would explain builds that differ only in layout joining or not, and a
+// blocking scan (loop stopped) seeing the AP that the connect cannot find.
+// /api/spin switches the rest off for a while to measure the difference.
+static const uint32_t LOOP_REST_MS = 1;
+static const uint32_t MAX_SPIN_S = 120;
 static const int DEFAULT_WAKE_LEAD_MIN = 30;    // the ramp length used in dawn-simulation studies
 static const int DEFAULT_WAKE_INSIST_MIN = 10;
 static const int32_t WAKE_RESYNC_S = 2;         // re-anchor to the wall clock only on a real jump
@@ -67,6 +76,7 @@ static Pulse pulse;
 static uint32_t pulseStartedAt;
 static bool isPulsing, isRaw, isDirty, isHomekitUp, isBootStable;
 static WakePhase wakeState = WAKE_WAITING;
+static uint32_t spinUntil, loopPasses, loopsLastSecond, loopCountedAt;
 static int32_t wakeAnchorS;     // seconds from the alarm at the anchor...
 static uint32_t wakeAnchorMs;   // ...and millis() at that moment: smooth time between clock ticks
 
@@ -578,4 +588,21 @@ void loop() {
     isDirty = false;
     saveState();
   }
+  uint32_t now = millis();
+  loopPasses++;
+  if (now - loopCountedAt >= 1000) {
+    loopsLastSecond = loopPasses;
+    loopPasses = 0;
+    loopCountedAt = now;
+  }
+  bool isSpinning = (int32_t)(spinUntil - now) > 0;
+  if (!isSpinning) delay(LOOP_REST_MS);
 }
+
+// Experiment: let the loop spin flat out for a while, then rest again by itself.
+void spinFor(uint32_t seconds) {
+  spinUntil = millis() + (seconds > MAX_SPIN_S ? MAX_SPIN_S : seconds) * 1000;
+  LOG("loop spinning for %lus", (unsigned long)(seconds > MAX_SPIN_S ? MAX_SPIN_S : seconds));
+}
+
+uint32_t loopsPerSecond() { return loopsLastSecond; }

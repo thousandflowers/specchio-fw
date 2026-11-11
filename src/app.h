@@ -7,7 +7,7 @@
 #include "effects.h"
 #include "policy.h"
 
-#define FW_VERSION "2.5.0"
+#define FW_VERSION "2.5.1"
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
 #define TIMEZONE TZ_Europe_Rome  // for the hourly tick
@@ -67,6 +67,8 @@ bool setWake(int hour, int minute, int leadMinutes, int insistMinutes);
 void cancelWake();           // forget the alarm, leave the lamp alone
 void acknowledgeWake();      // "I am up": stop the sequence, lamp stays on
 const char *wakePhaseName(); // "" when no alarm is set
+void spinFor(uint32_t seconds);       // experiment: no rest in the main loop for a while
+uint32_t loopsPerSecond();
 void restartClean();                  // intentional reboot: does not count as a crash
 void factoryReset();
 bool homekitPaired();
@@ -85,6 +87,7 @@ void netRequestRoamScan();
 #ifdef SELF_RESTORE  // experiment builds: see guard.cpp
 void guardBoot();
 void guardTick();
+void guardReached();  // a request from the home network was answered
 int guardRestore();  // 0 = bootloader armed: ESP.restart() now
 void guardDescribe(char *out, size_t len);
 #endif

@@ -6,9 +6,11 @@
 // firmware asks the bootloader to install it when it has not joined within a
 // minute of boot. The bootloader copies it exactly as it copies an OTA.
 //
-// Probation: the guard watches a firmware only until its first join. From then
-// on that build is proven, and a strip that boots with no Wi-Fi (router still
-// down after a blackout) keeps its firmware and the alarm it holds.
+// Probation: the guard watches a firmware only until it has answered a request
+// from the home network. An address is not proof: 2.3.x and 2.5.0 got one and
+// still could not be reached. From then on that build is proven, and a strip
+// that boots with no Wi-Fi (router still down after a blackout) keeps its
+// firmware and the alarm it holds. tools/try_fw.sh does the asking.
 //
 // Rule for this file: it must not add RAM data. The bug being hunted follows
 // the binary's layout, so the guard keeps its state in RTC memory and its text
@@ -32,6 +34,7 @@
 #include "app.h"
 extern "C" {
 #include <eboot_command.h>
+#include <user_interface.h>
 }
 
 #define SECTOR 4096u
@@ -41,19 +44,19 @@ extern "C" {
 #define STASH_MAGIC 0x57A5E002u
 #define GUARD_MAGIC 0x60A2D003u
 #define GUARD_RTC_BLOCK 40u
-#define GUARD_GRACE_MS 60000u     // good builds join 3 s after boot
+#define GUARD_GRACE_MS 90000u     // good builds answer within 15 s of boot
 #define GUARD_MAX_TRIES 2u        // then give up: the setup AP still opens at 5 minutes
 #define COPY_CHUNK 1024u
 #define STAGE_DIED_INSIDE 99u     // still there after a reboot = the attempt never returned
 
 struct StashHeader { uint32_t magic, size; char md5[36]; };
 // stage: where the last restore attempt stopped, 0 = bootloader armed.
-struct GuardRtc { uint32_t magic, tries, hasJoined, stage; };
+struct GuardRtc { uint32_t magic, tries, wasReached, stage; };
 
 static GuardRtc rtcRead() {
   GuardRtc r;
   bool isOurs = ESP.rtcUserMemoryRead(GUARD_RTC_BLOCK, (uint32_t *)&r, sizeof r) && r.magic == GUARD_MAGIC;
-  if (!isOurs) { r.magic = GUARD_MAGIC; r.tries = 0; r.hasJoined = 0; r.stage = 0; }
+  if (!isOurs) { r.magic = GUARD_MAGIC; r.tries = 0; r.wasReached = 0; r.stage = 0; }
   return r;
 }
 
@@ -138,9 +141,9 @@ void guardDescribe(char *out, size_t len) {
   bool isValid = stashHeader(h);
   if (isValid) stashMd5(h.size, actual);
   GuardRtc r = rtcRead();
-  snprintf_P(out, len, PSTR("stash=%d size=%u actual_md5=%s is_known_good=%d tries=%u joined=%u last_stage=%u proven=%d build=%08x\n"),
+  snprintf_P(out, len, PSTR("stash=%d size=%u actual_md5=%s is_known_good=%d tries=%u reached=%u last_stage=%u proven=%d build=%08x\n"),
              (int)isValid, (unsigned)(isValid ? h.size : 0), actual, (int)(strcmp_P(actual, PSTR(GOOD_FW_MD5)) == 0),
-             (unsigned)r.tries, (unsigned)r.hasJoined, (unsigned)r.stage, (int)isProven(), (unsigned)buildId());
+             (unsigned)r.tries, (unsigned)r.wasReached, (unsigned)r.stage, (int)isProven(), (unsigned)buildId());
 }
 
 // Arm the bootloader to install the stash at the next reboot. Returns 0 when
@@ -172,20 +175,32 @@ int guardRestore() {
 
 void guardBoot() {
   GuardRtc r = rtcRead();
-  r.hasJoined = 0;
+  r.wasReached = 0;
   rtcWrite(r);
 }
 
-void guardTick() {
-  bool isUp = WiFi.status() == WL_CONNECTED;
-  if (!isUp && millis() < GUARD_GRACE_MS) return;
+// A request from the home network was answered: this firmware can be reached.
+void guardReached() {
   GuardRtc r = rtcRead();
-  if (isUp) {
-    if (!r.hasJoined || r.tries) { r.hasJoined = 1; r.tries = 0; rtcWrite(r); markProven(); }
-    return;
+  if (r.wasReached && !r.tries) return;
+  r.wasReached = 1;
+  r.tries = 0;
+  rtcWrite(r);
+  markProven();
+}
+
+void guardTick() {
+#ifdef GUARD_SELFTEST
+  // Rehearsal of the worst case: a firmware that loses the network for good.
+  // Flashed on purpose, it must come back as the known-good image by itself.
+  if (millis() > 30000 && WiFi.status() == WL_CONNECTED) {
+    wifi_station_set_reconnect_policy(false);
+    wifi_station_disconnect();
   }
-  // A link lost after a good join is ordinary life at this signal, not a bad firmware.
-  if (r.hasJoined || r.tries >= GUARD_MAX_TRIES) return;
+#endif
+  if (millis() < GUARD_GRACE_MS) return;
+  GuardRtc r = rtcRead();
+  if (r.wasReached || r.tries >= GUARD_MAX_TRIES) return;
   if (isProven()) { r.tries = GUARD_MAX_TRIES; rtcWrite(r); return; }  // not on probation: leave it alone
   r.tries++;
   rtcWrite(r);

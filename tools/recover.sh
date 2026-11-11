@@ -48,6 +48,8 @@ echo "on setup AP"
 
 curl -s -m 10 "http://$AP_IP/api/log" -o "$OUT/log.txt" && echo "log saved"
 curl -s -m 5 "http://$AP_IP/api/state" -o "$OUT/state.json" && echo "state saved"
+# A guarded build says here why it did not restore itself (plain builds answer 404).
+curl -s -m 20 "http://$AP_IP/api/stash" -o "$OUT/stash.txt" && echo "guard: $(head -c 300 "$OUT/stash.txt")"
 
 if [ -n "$FW" ]; then
   echo "uploading $(basename "$FW") ($(stat -f %z "$FW") bytes)"
