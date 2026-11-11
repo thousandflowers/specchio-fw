@@ -229,7 +229,50 @@ static void handleLog() {
   server.send(200, "text/plain; charset=utf-8", out);
 }
 
+// /api/diag   what the radio and the flash look like right now. Runs only when
+// asked: the scan blocks for about 3 s and drops a join in progress.
+static void handleDiag() {
+  // ?cc=1   live test on a boot that cannot see the network: force the radio
+  // to channels 1-13 and try to join again.
+  if (server.arg("cc") == "1") {
+    wifi_country_t forced = {"IT", 1, 13, WIFI_COUNTRY_POLICY_MANUAL};
+    bool isSet = wifi_set_country(&forced);
+    WiFi.begin();
+    return sendText(200, isSet ? "channels forced to 1-13, joining" : "wifi_set_country failed");
+  }
+  String out;
+  out.reserve(900);
+  char line[220];
+  wifi_country_t country = {};
+  bool hasCountry = wifi_get_country(&country);
+  struct station_config sta = {};
+  wifi_station_get_config(&sta);
+  snprintf(line, sizeof line,
+           "fw=%s\ncountry=%s %.2s ch%u+%u policy%u\nopmode=%u phy=%u sta_status=%u\n"
+           "sta_ssid=%.32s bssid_set=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
+           FW_VERSION, hasCountry ? "ok" : "unreadable", country.cc, country.schan, country.nchan, country.policy,
+           wifi_get_opmode(), wifi_get_phy_mode(), wifi_station_get_connect_status(),
+           (const char *)sta.ssid, sta.bssid_set,
+           sta.bssid[0], sta.bssid[1], sta.bssid[2], sta.bssid[3], sta.bssid[4], sta.bssid[5]);
+  out += line;
+  snprintf(line, sizeof line, "flash_id=%06x real=%u header=%u map=%u sketch=%u free=%u crc_ok=%d\nsketch_md5=%s\n",
+           (unsigned)ESP.getFlashChipId(), (unsigned)ESP.getFlashChipRealSize(), (unsigned)ESP.getFlashChipSize(),
+           (unsigned)system_get_flash_size_map(), (unsigned)ESP.getSketchSize(), (unsigned)ESP.getFreeSketchSpace(),
+           ESP.checkFlashCRC(), ESP.getSketchMD5().c_str());
+  out += line;
+  int found = WiFi.scanNetworks(false, true);
+  snprintf(line, sizeof line, "scan=%d\n", found);
+  out += line;
+  for (int i = 0; i < found; i++) {
+    snprintf(line, sizeof line, "ch%d %ddBm %s\n", (int)WiFi.channel(i), (int)WiFi.RSSI(i), WiFi.SSID(i).c_str());
+    out += line;
+  }
+  WiFi.scanDelete();
+  server.send(200, "text/plain; charset=utf-8", out);
+}
+
 void webBegin() {
+  server.on("/api/diag", handleDiag);
   server.on("/", [] { server.send_P(200, "text/html; charset=utf-8", PAGE); });
   server.on("/api/state", sendState);
   server.on("/api/log", handleLog);
