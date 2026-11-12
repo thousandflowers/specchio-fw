@@ -9,7 +9,8 @@
     scenes.py posto --giro           # every place in places.json, plus a preview page
     scenes.py aerei --qui 48.86,2.35  # planes overhead: the flag colours of the country they fly to
     scenes.py suoni                  # real recordings, one at a time: the light follows the thunder
-    scenes.py aria                   # the colour of the air: PM2.5 read from the Xiaomi purifier
+    scenes.py aria                   # watch the air: normal light, coloured blinks when it gets bad
+    scenes.py aria --sempre          # the mirror stays the colour of the air (PM2.5)
     scenes.py aria --prova           # the whole scale in 20 seconds, from clean to very bad
     scenes.py check                  # self-check, touches neither lamp nor network
 
@@ -545,6 +546,84 @@ def air_colour(pm25: float) -> Hsv:
     return Hsv(AIR_SCALE[-1][1] % 360, 1.0, AIR_LIGHT)
 
 
+class AirRule(NamedTuple):
+    reading: str       # a name from purifier.READINGS
+    limit: float
+    is_above: bool     # broken when the reading is at the limit or beyond it on this side
+    hex: str           # colour of the blinks
+    blinks: int
+    remind_s: float    # while it stays broken, blink again this often
+    message: str
+
+
+# For one reading the worst rule comes first: only the first broken one speaks.
+AIR_RULES = (
+    AirRule("pm2.5-density", 50, True, "ff0000", 5, 15 * 60, "molta polvere o fumo nell'aria"),
+    AirRule("pm2.5-density", 25, True, "ff6a00", 3, 15 * 60, "polvere o fumo nell'aria"),
+    AirRule("relative-humidity", 65, True, "0050ff", 3, 2 * 3600, "aria umida e ferma: apri la finestra"),
+    AirRule("filter-life-level", 5, False, "ff00ff", 2, 24 * 3600, "filtro del purificatore finito: pulisce poco"),
+)
+AIR_LABELS = {"pm2.5-density": "polvere {} µg/m³", "relative-humidity": "umidità {}%",
+              "temperature": "{}°C", "filter-life-level": "filtro {}%"}
+AIR_MARGIN = 0.1            # a broken rule heals only once the reading is this share of the limit back inside
+ALL_CLEAR_HEX = "00ff40"
+QUIET_HOURS = (23, 8)       # no blinks from 23:00 to 08:00
+
+
+def is_broken(rule: AirRule, value: float, was_broken: bool) -> bool:
+    limit = rule.limit * ((1 - AIR_MARGIN if rule.is_above else 1 + AIR_MARGIN) if was_broken else 1)
+    return value >= limit if rule.is_above else value <= limit
+
+
+def broken_rules(readings: dict[str, float], before: tuple[AirRule, ...]) -> tuple[AirRule, ...]:
+    """The worst broken rule of each reading."""
+    worst: dict[str, AirRule] = {}
+    for rule in AIR_RULES:
+        if rule.reading in readings and rule.reading not in worst and is_broken(rule, readings[rule.reading], rule in before):
+            worst[rule.reading] = rule
+    return tuple(worst.values())
+
+
+def is_quiet(hour: int) -> bool:
+    start, end = QUIET_HOURS
+    return hour >= start or hour < end
+
+
+def watch_air(host: str, seconds: float, is_night_allowed: bool) -> None:
+    """The lamp keeps its own light; the firmware blinks a colour over it when a rule breaks."""
+    started = time.monotonic()
+    broken: tuple[AirRule, ...] = ()
+    blinked_at: dict[AirRule, float] = {}
+    print("controllo l'aria ogni minuto: Ctrl-C per fermare")
+    while True:
+        try:
+            readings = purifier.read_air()
+            now_broken = broken_rules(readings, broken)
+            can_blink = is_night_allowed or not is_quiet(time.localtime().tm_hour)
+            print(f"{time.strftime('%H:%M')}  " + "  ".join(AIR_LABELS[name].format(value) for name, value in readings.items())
+                  + "".join(f"\n       ! {rule.message}" for rule in now_broken)
+                  + ("" if can_blink or not now_broken else "\n       (di notte non lampeggio)"))
+            for rule in now_broken:
+                if can_blink and time.monotonic() - blinked_at.get(rule, -math.inf) >= rule.remind_s:
+                    if lan_get(host, f"/api/flash?hex={rule.hex}&n={rule.blinks}") is None:
+                        print("       (lampeggio non arrivato alla striscia)")
+                        continue
+                    blinked_at = {**blinked_at, rule: time.monotonic()}
+                    time.sleep(rule.blinks)   # let one colour finish before the next
+            if broken and not now_broken:
+                print("       aria tornata buona")
+                if can_blink:
+                    lan_get(host, f"/api/flash?hex={ALL_CLEAR_HEX}&n=1")
+            blinked_at = {rule: at for rule, at in blinked_at.items() if rule in now_broken}
+            broken = now_broken
+        except (OSError, KeyError, ValueError) as error:
+            print(f"purificatore non letto ({error}), riprovo")
+        left = seconds - (time.monotonic() - started)
+        if left <= 0:
+            return
+        time.sleep(min(AIR_REFRESH_S, left))
+
+
 def run_air(host: str, seconds: float, is_sweep: bool) -> None:
     if is_sweep:
         worst = AIR_SCALE[-1][0]
@@ -602,6 +681,14 @@ def check() -> None:
     assert all(place.area in AREAS and place.url.startswith("https://") for place in load_places())
     assert len({entry.key for entry in load_sounds()}) == len(load_sounds()) > 0
     assert [round(air_colour(value).hue) for value in (-5, 0, 25, 37.5, 100, 150, 9999)] == [120, 120, 60, 45, 0, 325, 290]
+    strong, mild, damp, spent = AIR_RULES
+    assert broken_rules({"pm2.5-density": 3, "relative-humidity": 50, "filter-life-level": 80}, ()) == ()
+    assert broken_rules({"pm2.5-density": 60, "relative-humidity": 68}, ()) == (strong, damp), "worst dust rule only"
+    assert broken_rules({"pm2.5-density": 24}, ()) == () and broken_rules({"pm2.5-density": 24}, (mild,)) == (mild,)
+    assert broken_rules({"pm2.5-density": 22}, (mild,)) == (), "heals once clearly back inside"
+    assert broken_rules({"filter-life-level": 0}, ()) == (spent,) and broken_rules({"temperature": 99}, ()) == ()
+    assert is_quiet(23) and is_quiet(3) and not is_quiet(8) and not is_quiet(22)
+    assert set(AIR_LABELS) == set(purifier.READINGS) >= {rule.reading for rule in AIR_RULES}
     frame = thunder_frame((0.0, 0.0, 1.0, 0.2), 0.0)
     assert frame(-1.0, 9) == STORM_LIGHT and frame(0.0, 9) == STORM_LIGHT and frame(9.0, 9) == STORM_LIGHT
     crack = frame(2.2 * sound.ENVELOPE_STEP_S - NET_LAG_S, 9)   # the frame is drawn NET_LAG_S ahead of the sound
@@ -619,7 +706,8 @@ def menu(host: str) -> None:
         *((f"posto: {place.name}", lambda place=place: run_place(host, place, math.inf)) for place in load_places()),
     ]
     if purifier.CONFIG.exists():
-        entries.append(("aria: il colore della qualità dell'aria", lambda: run_air(host, math.inf, False)))
+        entries.append(("aria: controlla e avvisa quando peggiora", lambda: watch_air(host, math.inf, False)))
+        entries.append(("aria: lo specchio resta del colore dell'aria", lambda: run_air(host, math.inf, False)))
         entries.append(("aria: prova di tutta la scala in 20 secondi", lambda: run_air(host, 0, True)))
     if HERE_FILE.exists():
         here = read_here(HERE_FILE.read_text())
@@ -671,6 +759,8 @@ def main() -> None:
                         help="seconds the Mac needs to start the sound; raise it if the light comes before the thunder")
     air = scenes.add_parser("aria")
     air.add_argument("--prova", action="store_true", help="sweep the whole scale instead of reading the purifier")
+    air.add_argument("--sempre", action="store_true", help="keep the mirror the colour of the air instead of only warning")
+    air.add_argument("--anche-di-notte", action="store_true", help=f"blink also between {QUIET_HOURS[0]}:00 and {QUIET_HOURS[1]}:00")
     air.add_argument("--seconds", type=float, default=math.inf)
     scenes.add_parser("check")
     args = parser.parse_args()
@@ -699,7 +789,10 @@ def main() -> None:
         elif args.scene == "suoni":
             sounds_menu(args.host, args.seconds, args.anticipo)
         elif args.scene == "aria":
-            run_air(args.host, args.seconds, args.prova)
+            if args.prova or args.sempre:
+                run_air(args.host, args.seconds, args.prova)
+            else:
+                watch_air(args.host, args.seconds, args.anche_di_notte)
         elif args.scene == "check":
             check()
         else:

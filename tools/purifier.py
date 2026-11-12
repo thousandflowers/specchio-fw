@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Read the air quality (PM2.5, micrograms per cubic metre) from the Xiaomi purifier on the home network.
+"""Read the air (PM2.5, humidity, temperature, filter life) from the Xiaomi purifier on the home network.
 
-    purifier.py          # print the value now
+    purifier.py          # print the values now
     purifier.py check    # self-check, no network
 
 Needs purifier.json (address and key), written by xiaomi_login.py. Talks to the
-device directly (miIO protocol, UDP 54321): no cloud. Where the PM2.5 value
-lives inside the device is looked up once in Xiaomi's public device
-descriptions (miot-spec.org) by model, then remembered in purifier.json.
+device directly (miIO protocol, UDP 54321): no cloud. Where each value lives
+inside the device is looked up once in Xiaomi's public device descriptions
+(miot-spec.org) by model, then remembered in purifier.json.
 Standard library plus the Mac's own openssl for AES.
 """
 import hashlib
@@ -28,6 +28,7 @@ TRIES = 3
 SPEC_LIST = "https://miot-spec.org/miot-spec-v2/instances?status=all"
 SPEC_ONE = "https://miot-spec.org/miot-spec-v2/instance?type={urn}"
 PM25_NAME = "pm2.5-density"
+READINGS = (PM25_NAME, "relative-humidity", "temperature", "filter-life-level")   # names from the device description
 
 
 def aes(key: bytes, vector: bytes, data: bytes, is_decrypt: bool) -> bytes:
@@ -95,23 +96,29 @@ def fetch_json(url: str) -> dict:
         return json.load(reply)
 
 
-def locate_pm25(model: str) -> tuple[int, int]:
+def locate(model: str) -> dict[str, list[int]]:
     released = [entry for entry in fetch_json(SPEC_LIST)["instances"] if entry["model"] == model]
     if not released:
         raise KeyError(f"modello {model} sconosciuto a miot-spec.org")
     newest = max(released, key=lambda entry: entry.get("version", 0))
-    return find_property(fetch_json(SPEC_ONE.format(urn=newest["type"])), PM25_NAME)
+    spec = fetch_json(SPEC_ONE.format(urn=newest["type"]))
+    return {name: list(find_property(spec, name)) for name in READINGS}
+
+
+def read_air() -> dict[str, float]:
+    """Every reading the device answers, by name (see READINGS)."""
+    config = json.loads(CONFIG.read_text())
+    if set(READINGS) - set(config.get("properties", {})):
+        config = {**config, "properties": locate(config["model"])}
+        CONFIG.write_text(json.dumps(config, indent=1))
+    places = {tuple(place): name for name, place in config["properties"].items() if name in READINGS}
+    reply = ask(config["localip"], bytes.fromhex(config["token"]), "get_properties",
+                [{"did": str(config["did"]), "siid": service, "piid": prop} for service, prop in places])
+    return {places[(item["siid"], item["piid"])]: item["value"] for item in reply["result"] if item.get("code") == 0}
 
 
 def read_pm25() -> int:
-    config = json.loads(CONFIG.read_text())
-    if "pm25" not in config:
-        config = {**config, "pm25": list(locate_pm25(config["model"]))}
-        CONFIG.write_text(json.dumps(config, indent=1))
-    service, prop = config["pm25"]
-    reply = ask(config["localip"], bytes.fromhex(config["token"]), "get_properties",
-                [{"did": str(config["did"]), "siid": service, "piid": prop}])
-    return int(reply["result"][0]["value"])
+    return int(read_air()[PM25_NAME])
 
 
 def check() -> None:
@@ -130,6 +137,6 @@ if __name__ == "__main__":
         if sys.argv[1:] == ["check"]:
             check()
         else:
-            print(f"PM2.5: {read_pm25()} µg/m³")
+            print("  ".join(f"{name}: {value}" for name, value in read_air().items()))
     except (OSError, KeyError, ValueError) as error:
         sys.exit(f"Non riuscito: {error}")
