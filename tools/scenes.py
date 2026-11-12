@@ -2,7 +2,8 @@
 """Scenes for the mirror, driven live from the Mac: light on the strip, sound from the Mac.
 
     scenes.py                        # menu: pick a scene by number
-    scenes.py temporale sopra        # thunderstorm; also: lontano, notte
+    scenes.py temporale film         # real rain and the film thunder, at random, until stopped
+    scenes.py temporale sopra        # synthetic thunderstorm, one minute; also: lontano, notte
     scenes.py terremoti              # live: one pulse for every earthquake in the world
     scenes.py terremoti --replay     # the last 24 hours, one after the other
     scenes.py posto kilauea          # the mirror takes the colour of a far-away webcam
@@ -201,16 +202,80 @@ def load_sounds() -> tuple[Sound, ...]:
     return tuple(Sound(**entry) for entry in json.loads(SOUNDS_FILE.read_text()))
 
 
+def thunder_level(shape: tuple[float, ...], since: float) -> float:
+    """How bright a thunder makes the light, `since` seconds after its sound became audible."""
+    index = int((since + NET_LAG_S) / sound.ENVELOPE_STEP_S)
+    if not 0 <= index < len(shape):
+        return 0.0
+    rise = max(0.0, shape[index] - shape[max(0, index - 2)])
+    return min(1.0, shape[index] + FLASH_KICK * rise)
+
+
+def storm_light(level: float) -> Hsv:
+    return Hsv(STORM_LIGHT.hue, STORM_LIGHT.saturation * (1 - level), STORM_LIGHT.value + (1 - STORM_LIGHT.value) * level)
+
+
 def thunder_frame(shape: tuple[float, ...], sound_started_s: float) -> Callable[[float, float], Hsv]:
     """Brightness follows the thunder's loudness; sound_started_s = when the sound becomes audible on the frame clock."""
-    def frame(elapsed: float, _total: float) -> Hsv:
-        index = int((elapsed - sound_started_s + NET_LAG_S) / sound.ENVELOPE_STEP_S)
-        if not 0 <= index < len(shape):
-            return STORM_LIGHT
-        rise = max(0.0, shape[index] - shape[max(0, index - 2)])
-        level = min(1.0, shape[index] + FLASH_KICK * rise)
-        return Hsv(STORM_LIGHT.hue, STORM_LIGHT.saturation * (1 - level), STORM_LIGHT.value + (1 - STORM_LIGHT.value) * level)
-    return frame
+    return lambda elapsed, _total: storm_light(thunder_level(shape, elapsed - sound_started_s))
+
+
+class RealStorm(NamedTuple):
+    rain: str                    # keys from sounds.json
+    rain_volume: float
+    thunders: tuple[str, ...]
+    mean_gap_s: float            # thunders start at random (Poisson) around this mean
+    volume: tuple[float, float]  # each thunder gets a random loudness in this range: near and far
+
+
+REAL_STORMS = {
+    "film": RealStorm("pioggia", 0.6, ("tuono-teatro",), 35, (0.45, 1.0)),
+}
+REAL_MIN_GAP_S = 4.0
+STORM_CHUNK_S = 600.0    # an endless storm is planned this much at a time
+
+
+class Clap(NamedTuple):
+    at: float
+    thunder: int      # index into the storm's recordings
+    volume: float
+
+
+def plan_claps(storm: RealStorm, seconds: float, longest_s: float) -> tuple[Clap, ...]:
+    """Random claps, none so late that its tail would be cut (unless the whole stretch is short)."""
+    last = seconds - longest_s if seconds > 2 * longest_s else seconds - 2
+    claps = []
+    at = random.uniform(1.5, 5.0)
+    while at < last:
+        claps.append(Clap(at, random.randrange(len(storm.thunders)), random.uniform(*storm.volume)))
+        at += max(REAL_MIN_GAP_S, random.expovariate(1 / storm.mean_gap_s))
+    return tuple(claps)
+
+
+def run_real_storm(host: str, name: str, seconds: float, lead_s: float) -> None:
+    storm = REAL_STORMS[name]
+    by_key = {entry.key: entry for entry in load_sounds()}
+    rain = sound.recording(by_key[storm.rain].url)
+    thunders = tuple(sound.recording(by_key[key].url) for key in storm.thunders)
+    longest = max(thunder.seconds for thunder in thunders)
+    print(f"temporale {name}: Ctrl-C per fermare" if math.isinf(seconds) else f"temporale {name}: {seconds:.0f} s")
+    with borrowed(host):
+        sound.start()
+        sound.repeat(sound.faded(rain), rain.seconds, storm.rain_volume)
+        left = seconds
+        while left > 0:
+            span = min(left, STORM_CHUNK_S)
+            claps = plan_claps(storm, span, longest)
+            for clap in claps:
+                sound.later(clap.at, thunders[clap.thunder].path, clap.volume)
+
+            def frame(elapsed: float, _total: float, claps: tuple[Clap, ...] = claps) -> Hsv:
+                return storm_light(min(1.0, sum(
+                    clap.volume * thunder_level(thunders[clap.thunder].thunder, elapsed - clap.at - lead_s) for clap in claps)))
+
+            sent, lost = play(host, Effect(name, name, span, frame), False)
+            print(f"{time.strftime('%H:%M')}  {len(claps)} tuoni, {sent / span:.0f} fotogrammi/s, {lost} persi")
+            left -= span
 
 
 def listen(host: str, entry: Sound, seconds: float, lead_s: float) -> None:
@@ -691,6 +756,12 @@ def check() -> None:
     assert set(AIR_LABELS) == set(purifier.READINGS) >= {rule.reading for rule in AIR_RULES}
     frame = thunder_frame((0.0, 0.0, 1.0, 0.2), 0.0)
     assert frame(-1.0, 9) == STORM_LIGHT and frame(0.0, 9) == STORM_LIGHT and frame(9.0, 9) == STORM_LIGHT
+    keys = {entry.key for entry in load_sounds()}
+    assert all({storm.rain, *storm.thunders} <= keys for storm in REAL_STORMS.values()), "storms use listed sounds"
+    claps = plan_claps(REAL_STORMS["film"], 3600, 25)
+    assert claps and all(clap.at < 3600 - 25 for clap in claps), "no thunder cut by the end of a stretch"
+    assert min(b.at - a.at for a, b in zip(claps, claps[1:])) > REAL_MIN_GAP_S - 1e-6
+    assert plan_claps(REAL_STORMS["film"], 20, 25), "a short test still gets a thunder"
     crack = frame(2.2 * sound.ENVELOPE_STEP_S - NET_LAG_S, 9)   # the frame is drawn NET_LAG_S ahead of the sound
     assert crack.value == 1.0 and crack.saturation == 0
     sound.demo()
@@ -699,7 +770,10 @@ def check() -> None:
 
 def menu(host: str) -> None:
     entries: list[tuple[str, Callable[[], None]]] = [
-        *((f"temporale {name} (1 minuto)", lambda name=name: run_storm(host, name, 60, False)) for name in STORMS),
+        *((f"temporale {name}: suoni veri, senza fine", lambda name=name: run_real_storm(host, name, math.inf, SOUND_LEAD_S))
+          for name in REAL_STORMS),
+        ("suoni: ascolta le registrazioni una alla volta", lambda: sounds_menu(host, LISTEN_S, SOUND_LEAD_S)),
+        *((f"temporale {name}: suoni finti, 1 minuto", lambda name=name: run_storm(host, name, 60, False)) for name in STORMS),
         ("terremoti: le ultime 24 ore di fila", lambda: run_quakes(host, True, 2.5, False)),
         ("terremoti: dal vivo", lambda: run_quakes(host, False, 2.5, False)),
         ("posti: giro di tutti, con anteprima", lambda: run_tour(host)),
@@ -734,8 +808,8 @@ def main() -> None:
     parser.add_argument("--host", default=HOST)
     scenes = parser.add_subparsers(dest="scene")
     storm = scenes.add_parser("temporale")
-    storm.add_argument("name", nargs="?", default="lontano", choices=STORMS)
-    storm.add_argument("--seconds", type=float, default=60)
+    storm.add_argument("name", nargs="?", default=next(iter(REAL_STORMS)), choices=[*REAL_STORMS, *STORMS])
+    storm.add_argument("--seconds", type=float, help="default: endless with real sounds, 60 with synthetic ones")
     storm.add_argument("--muto", action="store_true")
     storm.add_argument("--anticipo", type=float, default=SOUND_LEAD_S,
                        help="seconds the thunder is launched before its flash; raise it if the sound comes late")
@@ -767,7 +841,10 @@ def main() -> None:
 
     try:
         if args.scene == "temporale":
-            run_storm(args.host, args.name, args.seconds, args.muto, args.anticipo)
+            if args.name in REAL_STORMS:
+                run_real_storm(args.host, args.name, args.seconds or math.inf, args.anticipo)
+            else:
+                run_storm(args.host, args.name, args.seconds or 60, args.muto, args.anticipo)
         elif args.scene == "terremoti":
             run_quakes(args.host, args.replay, args.min_mag, args.muto)
         elif args.scene == "posto" and args.giro:

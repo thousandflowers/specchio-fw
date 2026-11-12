@@ -199,22 +199,34 @@ def busiest(shape: tuple[float, ...], seconds: float) -> float:
     return start * ENVELOPE_STEP_S
 
 
+def faded(source: Recording) -> Path:
+    """A copy with both ends faded (equal power), ready for repeat()."""
+    path = _folder / f"faded-{source.path.stem}.wav"
+    if not path.exists():
+        fades = (f"afade=t=in:d={CROSSFADE_S}:curve=qsin,"
+                 f"afade=t=out:st={source.seconds - CROSSFADE_S:.2f}:d={CROSSFADE_S}:curve=qsin")
+        _ffmpeg("-i", str(source.path), "-af", fades, str(path))
+    return path
+
+
 def excerpt(source: Recording, start: float, seconds: float) -> Path:
     path = _folder / f"excerpt-{source.path.stem}.wav"
     _ffmpeg("-ss", f"{start:.2f}", "-t", f"{seconds:.2f}", "-i", str(source.path), str(path))
     return path
 
 
-def loop(colour: str, volume: float) -> None:
-    """Play a noise colour until stop(): each pass starts under the tail of the one before."""
-    path = save(noise(colour, LOOP_S), f"loop-{colour}", CROSSFADE_S)
-
+def repeat(path: Path, seconds: float, volume: float) -> None:
+    """Play a file with faded ends until stop(): each pass starts under the tail of the one before."""
     def run() -> None:
         while not _is_stopping.is_set():
             play(path, volume)
-            _is_stopping.wait(LOOP_S - CROSSFADE_S)
+            _is_stopping.wait(seconds - CROSSFADE_S)
 
     threading.Thread(target=run, daemon=True).start()
+
+
+def loop(colour: str, volume: float) -> None:
+    repeat(save(noise(colour, LOOP_S), f"loop-{colour}", CROSSFADE_S), LOOP_S, volume)
 
 
 def later(seconds: float, path: Path, volume: float) -> None:
