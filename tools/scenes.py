@@ -8,6 +8,7 @@
     scenes.py posto kilauea          # the mirror takes the colour of a far-away webcam
     scenes.py posto --giro           # every place in places.json, plus a preview page
     scenes.py aerei --qui 48.86,2.35  # planes overhead: the flag colours of the country they fly to
+    scenes.py suoni                  # real recordings, one at a time: the light follows the thunder
     scenes.py check                  # self-check, touches neither lamp nor network
 
 Ctrl-C stops a scene; the lamp goes back to what it was showing.
@@ -174,6 +175,73 @@ def run_storm(host: str, name: str, seconds: float, is_silent: bool, lead_s: flo
         frame = storm_frame(storm, strikes, tuple(thunder.envelope for thunder in chosen))
         sent, lost = play(host, Effect(name, name, seconds, frame), False)
     print(f"temporale {name}: {len(strikes)} fulmini, {sent / seconds:.0f} fotogrammi/s, {lost} persi")
+
+
+# ---------- real recordings: the light follows the thunder in the sound ----------
+
+SOUNDS_FILE = Path(__file__).with_name("sounds.json")
+STORM_LIGHT = Hsv(228, 0.55, 0.08)   # the light while no thunder is sounding
+LISTEN_S = 40
+FLASH_KICK = 2.5        # a sudden rise in loudness adds this much extra light: the crack looks like a flash
+NET_LAG_S = 0.06        # a frame needs about this long to reach the strip
+STEADY_KINDS = frozenset({"pioggia"})   # rain has low thumps too, but nothing the light should flash for
+
+
+class Sound(NamedTuple):
+    key: str
+    name: str
+    kind: str
+    author: str
+    licence: str
+    url: str
+
+
+def load_sounds() -> tuple[Sound, ...]:
+    return tuple(Sound(**entry) for entry in json.loads(SOUNDS_FILE.read_text()))
+
+
+def thunder_frame(shape: tuple[float, ...], sound_started_s: float) -> Callable[[float, float], Hsv]:
+    """Brightness follows the thunder's loudness; sound_started_s = when the sound becomes audible on the frame clock."""
+    def frame(elapsed: float, _total: float) -> Hsv:
+        index = int((elapsed - sound_started_s + NET_LAG_S) / sound.ENVELOPE_STEP_S)
+        if not 0 <= index < len(shape):
+            return STORM_LIGHT
+        rise = max(0.0, shape[index] - shape[max(0, index - 2)])
+        level = min(1.0, shape[index] + FLASH_KICK * rise)
+        return Hsv(STORM_LIGHT.hue, STORM_LIGHT.saturation * (1 - level), STORM_LIGHT.value + (1 - STORM_LIGHT.value) * level)
+    return frame
+
+
+def listen(host: str, entry: Sound, seconds: float, lead_s: float) -> None:
+    print(f"{entry.name}: scarico e preparo (solo la prima volta)…")
+    source = sound.recording(entry.url)
+    seconds = min(seconds, source.seconds)
+    start = sound.busiest(source.thunder, seconds)
+    clip = sound.excerpt(source, start, seconds) if source.seconds > seconds else source.path
+    shape = () if entry.kind in STEADY_KINDS else source.thunder[int(start / sound.ENVELOPE_STEP_S):]
+    print(f"{entry.name}, di {entry.author} ({entry.licence}): {seconds:.0f} s da {start:.0f} s")
+    with borrowed(host):
+        sound.start()
+        sound.play(clip, 1.0, seconds)
+        play(host, Effect(entry.key, entry.name, seconds, thunder_frame(shape, lead_s)), False)
+
+
+def sounds_menu(host: str, seconds: float, lead_s: float) -> None:
+    entries = load_sounds()
+    while True:
+        print()
+        for number, entry in enumerate(entries, 1):
+            print(f"{number:2}  {entry.kind:10} {entry.name}")
+        answer = input("numero (Ctrl-C ferma, q esce): ").strip()
+        if answer == "q":
+            return
+        if answer.isdigit() and 1 <= int(answer) <= len(entries):
+            try:
+                listen(host, entries[int(answer) - 1], seconds, lead_s)
+            except KeyboardInterrupt:
+                print("\nfermato")
+            except (OSError, subprocess.CalledProcessError) as error:
+                print(f"non riuscito: {error}")
 
 
 # ---------- earthquakes ----------
@@ -495,6 +563,11 @@ def check() -> None:
     assert pulse.seconds == QUAKE_BASE_S + 6.0 and pulse.frame(0.3, pulse.seconds).hue == 320.0
     assert quake_pulse(second, 3.0).seconds == pulse.seconds / 3
     assert all(place.area in AREAS and place.url.startswith("https://") for place in load_places())
+    assert len({entry.key for entry in load_sounds()}) == len(load_sounds()) > 0
+    frame = thunder_frame((0.0, 0.0, 1.0, 0.2), 0.0)
+    assert frame(-1.0, 9) == STORM_LIGHT and frame(0.0, 9) == STORM_LIGHT and frame(9.0, 9) == STORM_LIGHT
+    crack = frame(2.2 * sound.ENVELOPE_STEP_S - NET_LAG_S, 9)   # the frame is drawn NET_LAG_S ahead of the sound
+    assert crack.value == 1.0 and crack.saturation == 0
     sound.demo()
     print("scenes ok")
 
@@ -550,6 +623,11 @@ def main() -> None:
     planes.add_argument("--qui", help=f"latitude,longitude of the house (default: the content of {HERE_FILE.name})")
     planes.add_argument("--km", type=float, default=15)
     planes.add_argument("--seconds", type=float, default=math.inf)
+    sounds = scenes.add_parser("suoni")
+    sounds.add_argument("key", nargs="?", help="a key from sounds.json; without it, a menu")
+    sounds.add_argument("--seconds", type=float, default=LISTEN_S)
+    sounds.add_argument("--anticipo", type=float, default=SOUND_LEAD_S,
+                        help="seconds the Mac needs to start the sound; raise it if the light comes before the thunder")
     scenes.add_parser("check")
     args = parser.parse_args()
 
@@ -569,6 +647,13 @@ def main() -> None:
             if not args.qui and not HERE_FILE.exists():
                 parser.error(f"aerei: serve --qui LAT,LON oppure il file {HERE_FILE.name} con dentro LAT,LON")
             run_planes(args.host, read_here(args.qui or HERE_FILE.read_text()), args.km, args.seconds)
+        elif args.scene == "suoni" and args.key:
+            by_key = {entry.key: entry for entry in load_sounds()}
+            if args.key not in by_key:
+                parser.error(f"suoni: uno tra {', '.join(by_key)}")
+            listen(args.host, by_key[args.key], args.seconds, args.anticipo)
+        elif args.scene == "suoni":
+            sounds_menu(args.host, args.seconds, args.anticipo)
         elif args.scene == "check":
             check()
         else:

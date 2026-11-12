@@ -1,4 +1,5 @@
-"""Synthesised noise for the mirror scenes, stdlib only, played by the Mac.
+"""Sound for the mirror scenes, played by the Mac: synthesised noise (stdlib only)
+and real recordings (downloaded once, decoded with ffmpeg).
 
 Colours of noise: white is a hiss, pink sounds like rain, brown like a far
 waterfall. Thunder is brown noise under a decaying, rumbling envelope, with a
@@ -6,15 +7,19 @@ white crack on top when the strike is close.
 """
 import array
 import atexit
+import hashlib
+import json
 import math
 import random
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
 import wave
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
+from urllib.request import Request, urlopen
 
 RATE = 22050
 PEAK = 0.9 * 32767
@@ -24,6 +29,13 @@ THUNDER_S = 7.0
 CRACK_S = 0.3
 NEAR = 0.4          # strikes closer than this get the crack
 ENVELOPE_STEP_S = 0.05
+CACHE = Path.home() / "Library" / "Caches" / "specchio-scenes"   # recordings, decoded once
+BASS_HZ = 200           # thunder lives below this; rain mostly above
+BASS_RATE = 1000
+BED_PERCENTILE = 0.2    # the quietest fifth of a recording is its steady bed (rain, hum)
+BED_MARGIN = 2.0        # the low band must be this many times louder than the bed to count as thunder
+DOWNLOAD_TIMEOUT_S = 180
+USER_AGENT = "specchio-scenes/1.0 (hobby light script, one download per file)"   # Wikimedia refuses anonymous agents
 
 _folder = Path(tempfile.mkdtemp(prefix="specchio-sound-"))
 _players: list[subprocess.Popen] = []
@@ -108,11 +120,89 @@ def save(samples: list[float], name: str, fade_s: float = 0.0) -> Path:
     return path
 
 
-def play(path: Path, volume: float = 1.0) -> None:
+def play(path: Path, volume: float = 1.0, seconds: float | None = None) -> None:
     if _is_stopping.is_set():
         return
+    limit = ["-t", f"{seconds:.2f}"] if seconds else []
     _players[:] = [player for player in _players if player.poll() is None]
-    _players.append(subprocess.Popen(["afplay", "-v", f"{volume:.2f}", str(path)]))
+    _players.append(subprocess.Popen(["afplay", "-v", f"{volume:.2f}", *limit, str(path)]))
+
+
+# ---------- real recordings ----------
+
+
+class Recording(NamedTuple):
+    path: Path                    # mono WAV, peak just under full scale
+    seconds: float
+    thunder: tuple[float, ...]    # loudness of the low band above the steady bed, 0..1, every ENVELOPE_STEP_S
+
+
+def _ffmpeg(*arguments: str) -> subprocess.CompletedProcess:
+    if not shutil.which("ffmpeg"):
+        raise OSError("serve ffmpeg per le registrazioni: brew install ffmpeg")
+    return subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-y", *arguments], capture_output=True, check=True)
+
+
+def thunder_shape(bass: array.array) -> list[float]:
+    """Loudness of the low band over time with the steady bed removed: what the lightning follows."""
+    window = int(ENVELOPE_STEP_S * BASS_RATE)
+    levels = [max(max(chunk), -min(chunk)) for chunk in (bass[at:at + window] for at in range(0, len(bass), window))]
+    bed = sorted(levels)[int(len(levels) * BED_PERCENTILE)] * BED_MARGIN
+    top = max(levels)
+    if top <= bed:
+        return [0.0] * len(levels)
+    return [round(max(0.0, (level - bed) / (top - bed)), 3) for level in levels]
+
+
+def cache_stem(url: str) -> Path:
+    return CACHE / hashlib.sha1(url.encode()).hexdigest()[:12]
+
+
+def prepare(source: Path, stem: Path) -> None:
+    """Any audio file -> normalised mono WAV plus its thunder shape, next to each other in the cache."""
+    wav, shape = stem.with_suffix(".wav"), stem.with_suffix(".json")
+    report = _ffmpeg("-i", str(source), "-af", "volumedetect", "-f", "null", "-").stderr.decode(errors="replace")
+    peak = re.search(r"max_volume: (-?[\d.]+) dB", report)
+    gain = -float(peak.group(1)) - 1 if peak else 0.0
+    _ffmpeg("-i", str(source), "-ac", "1", "-ar", str(RATE), "-af", f"volume={gain:.1f}dB", str(wav))
+    bass = _ffmpeg("-i", str(wav), "-af", f"lowpass=f={BASS_HZ}", "-ar", str(BASS_RATE), "-f", "s16le", "-").stdout
+    shape.write_text(json.dumps(thunder_shape(array.array("h", bass))))
+
+
+def recording(url: str) -> Recording:
+    """Download once, then always from the cache."""
+    CACHE.mkdir(parents=True, exist_ok=True)
+    stem = cache_stem(url)
+    wav, shape = stem.with_suffix(".wav"), stem.with_suffix(".json")
+    if not (wav.exists() and shape.exists()):
+        source = stem.with_suffix(".src")
+        with urlopen(Request(url, headers={"User-Agent": USER_AGENT}), timeout=DOWNLOAD_TIMEOUT_S) as reply:
+            source.write_bytes(reply.read())
+        prepare(source, stem)
+        source.unlink()
+    with wave.open(str(wav)) as file:
+        seconds = file.getnframes() / file.getframerate()
+    return Recording(wav, seconds, tuple(json.loads(shape.read_text())))
+
+
+def busiest(shape: tuple[float, ...], seconds: float) -> float:
+    """Start (in seconds) of the stretch of that length with the most thunder in it."""
+    span = int(seconds / ENVELOPE_STEP_S)
+    if len(shape) <= span:
+        return 0.0
+    best = total = sum(shape[:span])
+    start = 0
+    for index in range(span, len(shape)):
+        total += shape[index] - shape[index - span]
+        if total > best:
+            best, start = total, index - span + 1
+    return start * ENVELOPE_STEP_S
+
+
+def excerpt(source: Recording, start: float, seconds: float) -> Path:
+    path = _folder / f"excerpt-{source.path.stem}.wav"
+    _ffmpeg("-ss", f"{start:.2f}", "-t", f"{seconds:.2f}", "-i", str(source.path), str(path))
+    return path
 
 
 def loop(colour: str, volume: float) -> None:
@@ -163,6 +253,10 @@ def demo() -> None:
     assert loudness[0.0] > loudness[1.0], loudness
     shape = envelope(thunder(0.0, 2.0))
     assert abs(len(shape) * ENVELOPE_STEP_S - 2.0) < 0.1 and max(shape) == 1.0 and shape[-2] < 0.3, "loud at the crack, fading at the end"
+    quiet, loud = [100, -100] * 25, [20000, -20000] * 25   # 50 ms each at BASS_RATE
+    shape = thunder_shape(array.array("h", quiet * 8 + loud + quiet))
+    assert shape[8] == 1.0 and max(shape[:8] + shape[9:]) == 0.0, "only the loud window stands above the bed"
+    assert busiest((0, 0, 0, 0, 1, 1, 0, 0), 2 * ENVELOPE_STEP_S) == 4 * ENVELOPE_STEP_S
     path = save(noise("pink", 1.0), "check", 0.2)
     with wave.open(str(path)) as file:
         assert file.getnframes() == RATE and file.getframerate() == RATE
