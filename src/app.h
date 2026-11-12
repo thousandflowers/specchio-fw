@@ -7,7 +7,7 @@
 #include "effects.h"
 #include "policy.h"
 
-#define FW_VERSION "2.7.0"
+#define FW_VERSION "2.7.1"
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
 #define TIMEZONE TZ_Europe_Rome  // for the hourly tick
@@ -55,7 +55,7 @@ extern bool safeMode;
 bool saveConfig();
 void setPins(const int pins[3]);
 void applyLight();                    // fade to `light`, tell HomeKit, schedule a save
-void setRaw(int r, int g, int b);     // direct PWM duty, for wiring tests
+bool setRaw(int r, int g, int b);     // direct PWM duty (wiring tests, Mac scenes); false while a wake-up runs
 bool startEffect(const char *key, float minutes);  // minutes <= 0: the effect's default
 void stopEffect();
 const char *effectName();             // "" when none is running

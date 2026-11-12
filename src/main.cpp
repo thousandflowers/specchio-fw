@@ -69,7 +69,7 @@ static const FxDef EFFECTS[] = {
 
 static float cur[3];                  // perceived level 0..1 per channel, as shown right now
 static int lastDuty[3] = {-1, -1, -1};
-static uint32_t lastRenderAt, dirtyAt;
+static uint32_t lastRenderAt, dirtyAt, lastRawAt;
 static const FxDef *fx;               // running timed effect, or nullptr
 static uint32_t fxStartedAt, fxDurationMs;
 static Hsv fxLightBefore;
@@ -217,10 +217,18 @@ void setPins(const int pins[3]) {
   leaveRawMode();
 }
 
-void setRaw(int r, int g, int b) {
+static bool isWakeRunning();
+static const uint32_t RAW_IDLE_MS = 180000;  // a scene from the Mac silent for this long has died: see renderTick
+
+// Direct PWM duty: wiring tests and the scenes played by the Mac.
+// false = refused, because a wake-up owns the lamp and nothing may cover it.
+bool setRaw(int r, int g, int b) {
+  if (isWakeRunning()) return false;
   int duty[3] = {r, g, b};
   isRaw = true;
+  lastRawAt = millis();
   for (int i = 0; i < 3; i++) analogWrite(cfg.pins[i], constrain(duty[i], 0, PWM_MAX));
+  return true;
 }
 
 static void syncSwitch(homekit_characteristic_t *ch, bool isOn) {
@@ -418,7 +426,10 @@ static void wakeTick(time_t now) {
   bool wasMissed = wakeState == WAKE_WAITING && phase == WAKE_OVER;
   if (wasMissed) { LOG("wake: alarm time already passed, dropped"); forgetWake(); return; }
   if (phase == WAKE_OVER) { endWakeWithLampOn("finished, lamp left on"); return; }
-  if (wakeState == WAKE_WAITING) stopEffect();  // the wake-up takes the lamp from any effect
+  if (wakeState == WAKE_WAITING) {  // the wake-up takes the lamp from any effect and from any scene sent by the Mac
+    stopEffect();
+    leaveRawMode();
+  }
   wakeState = phase;
   LOG("wake: %s", wakePhaseName());
 }
@@ -440,6 +451,11 @@ void applyLight() {
 static void renderTick() {
   uint32_t now = millis();
   uint32_t dt = now - lastRenderAt;
+  // A scene whose sender went quiet (Mac asleep, program killed) must not freeze the lamp on its last frame.
+  if (isRaw && now - lastRawAt > RAW_IDLE_MS) {
+    LOG("raw: no frame for %lu s, back to the lamp's own light", (unsigned long)(RAW_IDLE_MS / 1000));
+    leaveRawMode();
+  }
   if (isRaw || dt < RENDER_MS) return;
   lastRenderAt = now;
 

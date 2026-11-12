@@ -24,11 +24,13 @@ import colorsys
 import itertools
 import json
 import math
+import os
 import random
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -52,19 +54,47 @@ def fetch(url: str) -> bytes:
         return reply.read()
 
 
+WAKE_CHECK_S = 10
+WAKE_IDLE = ("", "waiting")   # wake_phase values that mean no wake-up light is showing
+
+
+def is_wake_running(state: bytes | None) -> bool:
+    """True while the strip shows its wake-up light: then the lamp is not ours to touch."""
+    try:
+        return json.loads(state or b"{}").get("wake_phase", "") not in WAKE_IDLE
+    except ValueError:
+        return False
+
+
+def yield_to_wake(host: str, is_over: threading.Event) -> None:
+    """Stop the scene (as Ctrl-C would) as soon as the wake-up starts: the firmware refuses our frames anyway."""
+    while not is_over.wait(WAKE_CHECK_S):
+        if is_wake_running(lan_get(host, "/api/state")):
+            print("sveglia in corso: lascio la luce alla sveglia")
+            os.kill(os.getpid(), signal.SIGINT)
+            return
+
+
 @contextmanager
 def borrowed(host: str) -> Iterator[None]:
-    """Raw frames take the lamp over: afterwards give it back exactly as it was."""
+    """Raw frames take the lamp over: afterwards give it back exactly as it was, unless a wake-up took it."""
     state = lan_get(host, "/api/state")
     if state is None:
         raise OSError(f"la striscia non risponde a {host}")
+    if is_wake_running(state):
+        raise OSError("sveglia in corso: la luce è della sveglia")
     before = json.loads(state)
+    is_over = threading.Event()
+    threading.Thread(target=yield_to_wake, args=(host, is_over), daemon=True).start()
     try:
         yield
     finally:
+        is_over.set()
         sound.stop()
+        # During a wake-up, setting the light would count as "changed by hand" and cancel it: leave it alone.
         query = urlencode({"on": int(before["on"]), "h": before["h"], "s": before["s"], "v": before["v"]})
-        if not any(lan_get(host, f"/api/set?{query}") is not None for _ in range(TRIES)):
+        if not is_wake_running(lan_get(host, "/api/state")) and not any(
+                lan_get(host, f"/api/set?{query}") is not None for _ in range(TRIES)):
             print("lampada non ripristinata: accendila o spegnila da Casa")
 
 
@@ -831,6 +861,8 @@ def check() -> None:
     assert broken_rules({"filter-life-level": 0}, ()) == (spent,) and broken_rules({"temperature": 99}, ()) == ()
     assert is_quiet(23) and is_quiet(3) and not is_quiet(8) and not is_quiet(22)
     assert set(AIR_LABELS) == set(purifier.READINGS) >= {rule.reading for rule in AIR_RULES}
+    assert not is_wake_running(b'{"wake_phase":""}') and not is_wake_running(b'{"wake_phase":"waiting"}')
+    assert is_wake_running(b'{"wake_phase":"sunrise"}') and not is_wake_running(None) and not is_wake_running(b"x")
     home = home_scenes()
     assert to_drop(frozenset({"temporale", "aria"}), frozenset(), home) == frozenset(), "the air watch lives with a scene"
     assert to_drop(frozenset({"temporale", "posto"}), frozenset({"temporale"}), home) == {"temporale"}, "the new one wins"

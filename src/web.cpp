@@ -225,7 +225,7 @@ static void handleFlash() {
 // Drives the three outputs directly: used to find which GPIO is which colour.
 static void handleRaw() {
   int r = server.arg("r").toInt(), g = server.arg("g").toInt(), b = server.arg("b").toInt();
-  setRaw(r, g, b);
+  if (!setRaw(r, g, b)) return sendText(409, "wake-up running: the lamp is taken");
   char buf[64];
   snprintf(buf, sizeof buf, "{\"raw\":[%d,%d,%d]}", constrain(r, 0, PWM_MAX), constrain(g, 0, PWM_MAX),
            constrain(b, 0, PWM_MAX));
