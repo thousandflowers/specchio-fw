@@ -30,7 +30,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import sound
-from demo_effects import Effect, Hsv, play, send, wave
+from demo_effects import Effect, Hsv, lan_get, play, send, wave
 
 HOST = "192.0.2.66"
 NET_TIMEOUT_S = 12
@@ -47,19 +47,16 @@ def fetch(url: str) -> bytes:
 @contextmanager
 def borrowed(host: str) -> Iterator[None]:
     """Raw frames take the lamp over: afterwards give it back exactly as it was."""
-    before = json.loads(fetch(f"http://{host}/api/state"))
+    state = lan_get(host, "/api/state")
+    if state is None:
+        raise OSError(f"la striscia non risponde a {host}")
+    before = json.loads(state)
     try:
         yield
     finally:
         sound.stop()
         query = urlencode({"on": int(before["on"]), "h": before["h"], "s": before["s"], "v": before["v"]})
-        for _ in range(TRIES):
-            try:
-                fetch(f"http://{host}/api/set?{query}")
-                break
-            except OSError:
-                time.sleep(1)
-        else:
+        if not any(lan_get(host, f"/api/set?{query}") is not None for _ in range(TRIES)):
             print("lampada non ripristinata: accendila o spegnila da Casa")
 
 
@@ -213,7 +210,6 @@ def thunder_frame(shape: tuple[float, ...], sound_started_s: float) -> Callable[
 
 
 def listen(host: str, entry: Sound, seconds: float, lead_s: float) -> None:
-    print(f"{entry.name}: scarico e preparo (solo la prima volta)…")
     source = sound.recording(entry.url)
     seconds = min(seconds, source.seconds)
     start = sound.busiest(source.thunder, seconds)

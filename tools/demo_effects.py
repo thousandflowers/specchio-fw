@@ -10,7 +10,6 @@ into the firmware. Frames go to /api/raw, which bypasses HomeKit and flash.
 """
 import argparse
 import colorsys
-import http.client
 import math
 import random
 import subprocess
@@ -102,17 +101,21 @@ def to_duty(level: float) -> int:
     return max(1, round(luminance * PWM_MAX))
 
 
+def lan_get(host: str, path: str) -> bytes | None:
+    """GET from a device on the home network, None when it does not answer.
+
+    Goes through Apple's own curl on purpose: macOS lets Python reach local devices only when the app that
+    started it was granted "Local Network" access. From a plain Terminal window the connection fails with
+    errno 65 (No route to host) although the device is there, and curl is always allowed (measured 2026-11-12).
+    """
+    result = subprocess.run(["/usr/bin/curl", "-s", "-f", "-m", str(HTTP_TIMEOUT_S), f"http://{host}{path}"],
+                            capture_output=True, check=False)
+    return result.stdout if result.returncode == 0 else None
+
+
 def send(host: str, colour: Hsv) -> bool:
     red, green, blue = colorsys.hsv_to_rgb(colour.hue % 360 / 360, colour.saturation, colour.value)
-    path = f"/api/raw?r={to_duty(red)}&g={to_duty(green)}&b={to_duty(blue)}"
-    try:
-        connection = http.client.HTTPConnection(host, timeout=HTTP_TIMEOUT_S)
-        connection.request("GET", path)
-        connection.getresponse().read()
-        connection.close()
-        return True
-    except OSError:
-        return False
+    return lan_get(host, f"/api/raw?r={to_duty(red)}&g={to_duty(green)}&b={to_duty(blue)}") is not None
 
 
 def play(host: str, effect: Effect, should_speak: bool) -> tuple[int, int]:
