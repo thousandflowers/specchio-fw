@@ -43,12 +43,15 @@ From a Mac on the same network (`tools/`, macOS only, experimental):
   - **Sleep** (`sonno`): a dim breath-paced light and rain that fade to dark.
 - **Air quality** from a Xiaomi purifier read on the local network (`tools/purifier.py`): the lamp keeps its light
   and blinks a colour when dust or humidity pass a limit.
-- **Home app switches** for the scenes: Temporale, Mare in tempesta, Luogo, Sole, Sonno, Aria, Terremoti,
+- **Home app switches** for the scenes: Temporale, Mare in tempesta, Sole, Sonno, Aria, Terremoti,
   Posto lontano, Aerei. The strip holds the switch, `scenes.py casa` on the Mac plays the scene; scenes that
   drive the light exclude each other, and a wake-up always wins over any of them.
-- **A globe on the phone** to choose the place the "Luogo" switch shows: `scenes.py casa` serves it at
-  `http://<mac-name>.local:8765`. Turn it with a finger, tap a point or search a name; it shades the night side
-  of the Earth as it is right now.
+- **"Luogo" in the Home app is a television whose inputs are six places**: turning it on shows the sky over the
+  chosen place, picking another input changes place, and renaming an input in the Home app (TV settings) makes
+  the new name the new place. The names live on the strip (`/places.txt`, `/api/places`).
+- **A globe on the phone** to fill those six places: `scenes.py casa` serves it at
+  `http://<mac-name>.local:8765`. Pick a slot, turn the globe, tap a point or search a name; it shades the night
+  side of the Earth as it is right now.
 
 ## Measured: before and after
 
@@ -150,6 +153,7 @@ Open on the local network:
     GET /api/flash?hex=ff8000&n=3            coloured blinks over whatever is showing
     GET /api/wake?at=07:30                   or a POST with any text containing times; stop=1, off=1, ring=1
     GET /api/scene?name=temporale&on=1       flips the Home switch of a scene the Mac plays
+    GET /api/places?slot=3&name=Tokyo&chosen=1   rename and/or choose one of the six "Luogo" places
     GET /api/set?shimmer=30&hourly=1&claude=1
     GET /api/roam                            look for a better access point now
 

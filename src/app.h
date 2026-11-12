@@ -7,7 +7,7 @@
 #include "effects.h"
 #include "policy.h"
 
-#define FW_VERSION "2.8.0"
+#define FW_VERSION "2.9.0"
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
 #define TIMEZONE TZ_Europe_Rome  // for the hourly tick
@@ -67,6 +67,11 @@ void flash(float hue, float saturation, int count);  // coloured blinks over wha
 void setShimmer(int amount);
 void setHourly(bool isOn);
 void setClaude(bool isOn);  // lets through or mutes the flashes tagged src=claude
+static const int PLACE_SLOTS = 6;        // inputs of the "Luogo" television (accessory.c)
+static const size_t PLACE_NAME_LEN = 24;  // bytes, without the terminator
+int currentPlaceSlot();
+const char *placeName(int slot);          // "" outside 1..PLACE_SLOTS
+bool setPlace(int slot, const char *name, bool isChosen);  // name may be null: only choose it
 bool setScene(const char *key, bool isOn);  // a Home switch for a scene the Mac plays; false = unknown key
 void scenesOn(char *out, size_t size);      // comma-separated keys of the scenes switched on
 // Wake-up light for the next alarm. False when the strip does not know the time yet.

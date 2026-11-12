@@ -94,13 +94,13 @@ static void sendState() {
   if (wakeAt) strftime(wake, sizeof wake, "%H:%M", localtime(&wakeAt));
   char scenes[80];
   scenesOn(scenes, sizeof scenes);
-  char buf[1024];
+  char buf[1152];
   snprintf(buf, sizeof buf,
     "{\"on\":%s,\"h\":%s,\"s\":%s,\"v\":%d,\"hex\":\"%s\","
     "\"rssi\":%d,\"ssid\":\"%s\",\"bssid\":\"%s\",\"channel\":%d,\"phy\":\"%c\","
     "\"disconnects\":%lu,\"failed_joins\":%lu,\"last_disconnect\":\"%s\",\"tx_dbm\":%u,"
     "\"pins\":\"%d,%d,%d\",\"boot\":\"%c\",\"fade_ms\":%u,"
-    "\"effect\":\"%s\",\"effect_left_s\":%lu,\"shimmer\":%u,\"hourly\":%s,\"claude\":%s,\"scenes\":\"%s\",\"time\":\"%s\","
+    "\"effect\":\"%s\",\"effect_left_s\":%lu,\"shimmer\":%u,\"hourly\":%s,\"claude\":%s,\"scenes\":\"%s\",\"place_slot\":%d,\"place\":\"%s\",\"time\":\"%s\","
     "\"wake\":\"%s\",\"wake_phase\":\"%s\",\"wake_lead_min\":%u,\"wake_insist_min\":%u,"
     "\"homekit_paired\":%s,\"homekit_clients\":%d,\"safe_mode\":%s,"
     "\"heap\":%lu,\"uptime_s\":%lu,\"reset\":\"%s\",\"fw\":\"%s\"}",
@@ -111,7 +111,7 @@ static void sendState() {
     netLastReason ? discReasonName(netLastReason) : "", cfg.txDbm,
     cfg.pins[0], cfg.pins[1], cfg.pins[2], cfg.boot, cfg.fadeMs,
     effectName(), (unsigned long)effectSecondsLeft(), cfg.shimmer, cfg.isHourly ? "true" : "false",
-    cfg.isClaudeOn ? "true" : "false", scenes, clock,
+    cfg.isClaudeOn ? "true" : "false", scenes, currentPlaceSlot(), placeName(currentPlaceSlot()), clock,
     wake, wakePhaseName(), cfg.wakeLeadMin, cfg.wakeInsistMin,
     homekitPaired() ? "true" : "false", homekitClients(), safeMode ? "true" : "false",
     (unsigned long)ESP.getFreeHeap(), millis() / 1000UL, ESP.getResetReason().c_str(), FW_VERSION);
@@ -151,6 +151,19 @@ static void handleScene() {
     return sendText(400, "name: temporale, aria, terremoti, posto, aerei, mare, luogo, sole or sonno");
   }
   sendState();
+}
+
+// /api/places                         the six places of the "Luogo" television and the chosen one
+// /api/places?slot=3&name=Tokyo&chosen=1   rename slot 3 and/or choose it
+static void handlePlaces() {
+  if (server.hasArg("slot")) {
+    int slot = server.arg("slot").toInt();
+    String name = server.arg("name");
+    if (!setPlace(slot, name.c_str(), server.arg("chosen") == "1")) return sendText(400, "slot: 1 to 6");
+  }
+  String json = String("{\"slot\":") + currentPlaceSlot() + ",\"names\":[";
+  for (int slot = 1; slot <= PLACE_SLOTS; slot++) json += String(slot > 1 ? "," : "") + '"' + placeName(slot) + '"';
+  server.send(200, "application/json", json + "]}");
 }
 
 // /api/effect?name=alba&minutes=20   name=off stops whatever is running
@@ -329,6 +342,7 @@ void webBegin() {
   server.on("/api/raw", handleRaw);
   server.on("/api/effect", handleEffect);
   server.on("/api/scene", handleScene);
+  server.on("/api/places", handlePlaces);
   server.on("/api/flash", handleFlash);
   server.on("/api/wake", handleWake);
   server.on("/api/spin", [] {  // ?s=30 starts, ?s=0 stops, no argument just reports; see LOOP_REST_MS

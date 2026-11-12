@@ -14,7 +14,8 @@ extern homekit_characteristic_t cha_on, cha_bri, cha_hue, cha_sat;
 extern homekit_characteristic_t cha_fx_alba, cha_fx_focus, cha_shimmer, cha_hourly, cha_claude;
 extern homekit_characteristic_t cha_serial;
 extern homekit_characteristic_t cha_sc_storm, cha_sc_air, cha_sc_quakes, cha_sc_place, cha_sc_planes;
-extern homekit_characteristic_t cha_sc_sea, cha_sc_spot, cha_sc_sun, cha_sc_sleep;
+extern homekit_characteristic_t cha_sc_sea, cha_sc_sun, cha_sc_sleep, cha_tv_active, cha_tv_input;
+extern homekit_characteristic_t cha_place_name[];
 int homekit_storage_reset();
 }
 
@@ -233,8 +234,14 @@ bool setRaw(int r, int g, int b) {
   return true;
 }
 
+// Switches are bool; the "Luogo" television's on/off (ACTIVE) is uint8.
+static bool isSwitchOn(const homekit_characteristic_t *ch) {
+  return ch->value.format == homekit_format_uint8 ? ch->value.uint8_value != 0 : ch->value.bool_value;
+}
+
 static void syncSwitch(homekit_characteristic_t *ch, bool isOn) {
-  ch->value.bool_value = isOn;
+  if (ch->value.format == homekit_format_uint8) ch->value.uint8_value = isOn;
+  else ch->value.bool_value = isOn;
   if (isHomekitUp) homekit_characteristic_notify(ch, ch->value);
 }
 
@@ -339,7 +346,7 @@ struct SceneDef {
 static const SceneDef SCENES[] = {
   {"temporale", &cha_sc_storm}, {"aria", &cha_sc_air}, {"terremoti", &cha_sc_quakes},
   {"posto", &cha_sc_place},     {"aerei", &cha_sc_planes},     {"mare", &cha_sc_sea},
-  {"luogo", &cha_sc_spot},      {"sole", &cha_sc_sun},         {"sonno", &cha_sc_sleep},
+  {"luogo", &cha_tv_active},    {"sole", &cha_sc_sun},         {"sonno", &cha_sc_sleep},
 };
 
 bool setScene(const char *key, bool isOn) {
@@ -355,10 +362,71 @@ bool setScene(const char *key, bool isOn) {
 void scenesOn(char *out, size_t size) {
   out[0] = 0;
   for (const SceneDef &def : SCENES) {
-    if (!def.homekitSwitch->value.bool_value) continue;
+    if (!isSwitchOn(def.homekitSwitch)) continue;
     if (out[0]) strlcat(out, ",", size);
     strlcat(out, def.key, size);
   }
+}
+
+// ---------- places: the inputs of the "Luogo" television ----------
+// The strip only keeps the names and which one is chosen; the Mac turns a name into a sky.
+static const char PLACES_PATH[] = "/places.txt";  // first line: chosen slot (1-6), then one name per line
+static char placeNames[PLACE_SLOTS][PLACE_NAME_LEN + 1];
+static uint8_t placeSlot = 1;
+
+// Printable text without line breaks or quotes, cut on a whole UTF-8 character.
+static void cleanPlaceName(const char *in, char *out) {
+  size_t n = 0;
+  for (; *in && n < PLACE_NAME_LEN; in++) {
+    unsigned char c = (unsigned char)*in;
+    if (c >= 0x20 && c != 0x7f && c != '"' && c != '\\') out[n++] = (char)c;
+  }
+  if (*in && ((unsigned char)*in & 0xC0) == 0x80) {  // the cut fell inside a character: drop all of it
+    while (n > 0 && ((unsigned char)out[n - 1] & 0xC0) == 0x80) n--;
+    if (n > 0) n--;
+  }
+  while (n > 0 && out[n - 1] == ' ') n--;
+  out[n] = 0;
+}
+
+static void savePlaces() {
+  String text = String(placeSlot) + '\n';
+  for (const char *name : placeNames) text += String(name) + '\n';
+  if (!safeMode && !writeFile(PLACES_PATH, text)) LOG("could not save places");
+}
+
+static void loadPlaces() {
+  for (int i = 0; i < PLACE_SLOTS; i++) cleanPlaceName(cha_place_name[i].value.string_value, placeNames[i]);
+  String text = readFile(PLACES_PATH);
+  int line = 0, start = 0;
+  for (int at = 0; at <= (int)text.length(); at++) {
+    if (at < (int)text.length() && text[at] != '\n') continue;
+    String item = text.substring(start, at);
+    if (line == 0 && item.toInt() >= 1 && item.toInt() <= PLACE_SLOTS) placeSlot = item.toInt();
+    if (line >= 1 && line <= PLACE_SLOTS && item.length()) cleanPlaceName(item.c_str(), placeNames[line - 1]);
+    line++;
+    start = at + 1;
+  }
+  for (int i = 0; i < PLACE_SLOTS; i++) cha_place_name[i].value.string_value = placeNames[i];  // ours, never freed
+  cha_tv_input.value.uint32_value = placeSlot;
+}
+
+int currentPlaceSlot() { return placeSlot; }
+const char *placeName(int slot) { return slot >= 1 && slot <= PLACE_SLOTS ? placeNames[slot - 1] : ""; }
+
+bool setPlace(int slot, const char *name, bool isChosen) {
+  if (slot < 1 || slot > PLACE_SLOTS) return false;
+  if (name && *name) {
+    cleanPlaceName(name, placeNames[slot - 1]);
+    if (isHomekitUp) homekit_characteristic_notify(&cha_place_name[slot - 1], cha_place_name[slot - 1].value);
+  }
+  if (isChosen) {
+    placeSlot = slot;
+    cha_tv_input.value.uint32_value = slot;
+    if (isHomekitUp) homekit_characteristic_notify(&cha_tv_input, cha_tv_input.value);
+  }
+  savePlaces();
+  return true;
 }
 
 // ---------- wake-up ----------
@@ -549,6 +617,17 @@ static void hkSetHourly(const homekit_value_t v) { setHourly(v.bool_value); }
 static void hkSetClaude(const homekit_value_t v) { setClaude(v.bool_value); }
 static void hkSetScene(homekit_characteristic_t *ch, const homekit_value_t v) { ch->value = v; }
 
+static void hkSetPlaceSlot(const homekit_value_t v) {
+  if (v.uint32_value >= 1 && v.uint32_value <= PLACE_SLOTS) setPlace(v.uint32_value, nullptr, true);
+}
+
+// Renaming an input in the Home app: the name is copied into our buffer, the library's copy is never kept.
+static void hkSetPlaceName(homekit_characteristic_t *ch, const homekit_value_t v) {
+  for (int i = 0; i < PLACE_SLOTS; i++) {
+    if (ch == &cha_place_name[i] && v.string_value) setPlace(i + 1, v.string_value, false);
+  }
+}
+
 static void hkEvent(homekit_event_t event) {
   if (event == HOMEKIT_EVENT_PAIRING_ADDED) LOG("homekit: paired");
   if (event == HOMEKIT_EVENT_PAIRING_REMOVED) LOG("homekit: pairing removed");
@@ -564,6 +643,9 @@ static void homekitStart() {
   cha_hourly.setter = hkSetHourly;
   cha_claude.setter = hkSetClaude;
   for (const SceneDef &def : SCENES) def.homekitSwitch->setter_ex = hkSetScene;
+  cha_tv_input.setter = hkSetPlaceSlot;
+  for (int i = 0; i < PLACE_SLOTS; i++) cha_place_name[i].setter_ex = hkSetPlaceName;
+  loadPlaces();
   cha_shimmer.value.bool_value = cfg.shimmer > 0;
   cha_hourly.value.bool_value = cfg.isHourly;
   cha_claude.value.bool_value = cfg.isClaudeOn;

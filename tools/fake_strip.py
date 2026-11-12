@@ -14,7 +14,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qsl, urlsplit
 
 PORT = 8766
-state = {"on": True, "h": 35.0, "s": 50.0, "v": 100, "wake": "", "wake_phase": "", "scenes": "", "fw": "fake"}
+state = {"on": True, "h": 35.0, "s": 50.0, "v": 100, "wake": "", "wake_phase": "", "scenes": "", "fw": "fake",
+         "place_slot": 1, "place": "Tokyo"}
+places = ["Tokyo", "Reykjavik", "New York", "Honolulu", "Sydney", "Ushuaia"]
 seen = {"raw": 0, "set": 0, "flash": 0, "refused": 0, "last_raw": None, "last_set": None, "last_flash": None}
 
 
@@ -39,6 +41,17 @@ class Strip(BaseHTTPRequestHandler):
         elif url.path == "/api/scene":
             on = set(filter(None, state["scenes"].split(","))) - {query.get("name", "")}
             state["scenes"] = ",".join(sorted(on | ({query["name"]} if query.get("on") != "0" else set())))
+        elif url.path == "/api/places":
+            if "slot" in query:
+                slot = int(query["slot"])
+                if not 1 <= slot <= len(places):
+                    return self.reply(400, "slot: 1 to 6")
+                if query.get("name"):
+                    places[slot - 1] = query["name"][:24]
+                if query.get("chosen") == "1":
+                    state["place_slot"] = slot
+                state["place"] = places[state["place_slot"] - 1]
+            return self.reply(200, json.dumps({"slot": state["place_slot"], "names": places}))
         elif url.path == "/fake":
             if "wake" in query:
                 state["wake_phase"] = query["wake"]

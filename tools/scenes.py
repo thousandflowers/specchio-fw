@@ -31,6 +31,7 @@ import json
 import math
 import os
 import random
+import re
 import signal
 import subprocess
 import sys
@@ -47,7 +48,7 @@ import nature
 import purifier
 import sound
 import globe
-from demo_effects import Effect, Hsv, lan_get, local_setting, play, read_local, send, wave
+from demo_effects import Effect, Hsv, lan_get, local_setting, play, read_local, send, update_local, wave
 
 HOST = local_setting("strip", "specchio.local")   # this home's values live in tools/local.json
 NET_TIMEOUT_S = 12
@@ -416,8 +417,35 @@ def spot_frame(weather: Weather, strikes: tuple[Strike, ...], height: Callable[[
     return frame
 
 
-def saved_spot() -> Spot:
-    """The place picked on the globe, or the home; error when neither is set."""
+COORDS_PAIR = r"\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*"
+
+
+def spot_named(name: str) -> Spot:
+    """A place name from the Home app: "48.86, 2.35" as it is, a remembered name, or looked up once and remembered."""
+    pair = re.fullmatch(COORDS_PAIR, name)
+    if pair and -90 <= float(pair[1]) <= 90 and -180 <= float(pair[2]) <= 180:
+        return Spot(name, float(pair[1]), float(pair[2]))
+    coords = read_local().get("coords")
+    coords = coords if isinstance(coords, dict) else {}
+    if name in coords:
+        return Spot(name, float(coords[name][0]), float(coords[name][1]))
+    spot = find_spot(name)
+    update_local({"coords": {**coords, name: [spot.latitude, spot.longitude]}})
+    return Spot(name, spot.latitude, spot.longitude)
+
+
+def chosen_place(host: str) -> tuple[int, str] | None:
+    """(slot, name) chosen on the "Luogo" television; None with an old firmware or no answer."""
+    state = lan_get(host, "/api/state")
+    data = json.loads(state) if state else {}
+    return (data["place_slot"], data["place"]) if data.get("place") else None
+
+
+def saved_spot(host: str = "") -> Spot:
+    """The place chosen in the Home app, else the one picked on the old globe, else the home."""
+    chosen = chosen_place(host) if host else None
+    if chosen:
+        return spot_named(chosen[1])
     local = read_local()
     place = local.get("place")
     if isinstance(place, dict):
@@ -433,7 +461,7 @@ def run_spot(host: str, name: str, seconds: float, replay: str) -> None:
 
     Without a name: the place picked on the globe (tools/local.json).
     """
-    spot = find_spot(name) if name else saved_spot()
+    spot = find_spot(name) if name else saved_spot(host)
     weather = CALM
     left = DAWN_REPLAY_S if replay else seconds
     with borrowed(host):
@@ -978,11 +1006,11 @@ def run_home(host: str) -> None:
     if page:
         name = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True, text=True).stdout.strip()
         print(f"globo per scegliere il luogo: http://{name or 'questo-mac'}.local:{globe.PORT}")
-    place_seen = read_local().get("place")
+    place_seen = chosen_place(host)
     parent = os.getppid()   # started by the auto-start service: when that stops, stop too and take the scenes along
     try:
         while os.getppid() == parent:
-            place_now = read_local().get("place")
+            place_now = chosen_place(host) or place_seen
             if place_now != place_seen and "luogo" in running:
                 print(f"{time.strftime('%H:%M')}  luogo: nuovo posto, riparto")
                 stop_scene(running.pop("luogo"))
@@ -1069,9 +1097,13 @@ def check() -> None:
     assert spot_frame(CALM, (), lambda elapsed: -30.0)(1, 9) == nature.SKY[0][1], "a calm night is the night colour"
     assert long_band([{"energy": "0.1-0.8nm", "flux": 2e-6}, {"energy": "0.05-0.4nm", "flux": 9}, {"energy": "0.1-0.8nm", "flux": 0}]) == (2e-6,)
     nature.demo()
-    assert globe.clean_place({"lat": "45.5", "lon": 12.3, "name": "Ve\nnezia"}) == {"name": "Venezia", "lat": 45.5, "lon": 12.3}
+    assert globe.clean_place({"lat": "45.5", "lon": 12.3, "name": "Ve\nnezia", "slot": 2}) == {
+        "name": "Venezia", "lat": 45.5, "lon": 12.3, "slot": 2}
     assert globe.clean_place({"lat": 1, "lon": 2})["name"] == "1.00, 2.00"
-    for bad in ({"lat": 91, "lon": 0}, {"lat": "x", "lon": 0}, {"lon": 0}):
+    assert globe.strip_name('a"b\\c') == "abc" and globe.strip_name("Reykjavík  ") == "Reykjavík"
+    assert globe.strip_name("12345678901234567890123é") == "12345678901234567890123", "same cut as the firmware"
+    assert spot_named("48.86, 2.35") == Spot("48.86, 2.35", 48.86, 2.35)
+    for bad in ({"lat": 91, "lon": 0}, {"lat": "x", "lon": 0}, {"lon": 0}, {"lat": 0, "lon": 0, "slot": 7}):
         try:
             globe.clean_place(bad)
             raise AssertionError(f"accepted {bad}")

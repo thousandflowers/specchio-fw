@@ -1,11 +1,13 @@
-"""A globe on the phone to pick the place the mirror shows (the "Luogo" scene).
+"""A globe on the phone to fill the place list of the "Luogo" television in the Home app.
 
 Served by the Mac while `scenes.py casa` runs: open http://<mac-name>.local:8765 on the phone.
-Turn the globe with a finger, tap a point or search a name, then "Mostra sullo specchio".
-The choice is saved as "place" in tools/local.json; the Home helper restarts the scene when it changes.
+Pick one of the six places, then turn the globe and tap a point (or search a name): the place is renamed on
+the strip, chosen, and shown. The Home app shows the same six names as the inputs of "Luogo".
+Coordinates are remembered by name in tools/local.json ("coords").
 """
 import json
 import threading
+from urllib.parse import quote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
@@ -13,16 +15,34 @@ from demo_effects import lan_get, read_local, update_local
 
 PORT = 8765
 MAX_BODY = 2048
-MAX_NAME = 80
+NAME_BYTES = 24   # PLACE_NAME_LEN in the firmware
+SLOTS = 6         # PLACE_SLOTS in the firmware
+
+
+def strip_name(name: str) -> str:
+    """The name exactly as the strip will keep it (cleanPlaceName in src/main.cpp): printable, no quotes or
+    backslashes, at most NAME_BYTES of UTF-8 cut on a whole character, no trailing spaces."""
+    kept = "".join(char for char in name if char.isprintable() and char not in '"\\')
+    encoded = kept.encode()[:NAME_BYTES]
+    return encoded.decode(errors="ignore").rstrip(" ")
 
 
 def clean_place(data: dict) -> dict:
-    """The only shape accepted from the page: a short name and real coordinates."""
+    """The only shape accepted from the page: a short name, real coordinates, a slot."""
     latitude, longitude = float(data["lat"]), float(data["lon"])
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         raise ValueError("coordinate fuori dal mondo")
-    name = "".join(char for char in str(data.get("name", "")) if char.isprintable()).strip()[:MAX_NAME]
-    return {"name": name or f"{latitude:.2f}, {longitude:.2f}", "lat": round(latitude, 3), "lon": round(longitude, 3)}
+    slot = int(data.get("slot", 1))
+    if not 1 <= slot <= SLOTS:
+        raise ValueError("posto: da 1 a 6")
+    name = strip_name(str(data.get("name", ""))) or strip_name(f"{latitude:.2f}, {longitude:.2f}")
+    return {"name": name, "lat": round(latitude, 3), "lon": round(longitude, 3), "slot": slot}
+
+
+def remember(place: dict) -> None:
+    coords = read_local().get("coords")
+    coords = coords if isinstance(coords, dict) else {}
+    update_local({"coords": {**coords, place["name"]: [place["lat"], place["lon"]]}})
 
 
 def make_handler(strip: str) -> type[BaseHTTPRequestHandler]:
@@ -32,8 +52,11 @@ def make_handler(strip: str) -> type[BaseHTTPRequestHandler]:
                 return self.reply(200, PAGE, "text/html; charset=utf-8")
             if self.path == "/api/place":
                 state = lan_get(strip, "/api/state")
+                places = lan_get(strip, "/api/places")
                 is_on = "luogo" in json.loads(state).get("scenes", "").split(",") if state else None
-                return self.reply(200, json.dumps({"place": read_local().get("place"), "on": is_on}), "application/json")
+                listed = json.loads(places) if places else {"slot": 1, "names": []}
+                coords = read_local().get("coords") or {}
+                return self.reply(200, json.dumps({**listed, "on": is_on, "coords": coords}), "application/json")
             self.reply(404, "not found", "text/plain")
 
         def do_POST(self) -> None:
@@ -44,7 +67,9 @@ def make_handler(strip: str) -> type[BaseHTTPRequestHandler]:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 if self.path == "/api/place":
                     place = clean_place(body)
-                    update_local({"place": place})
+                    remember(place)
+                    if lan_get(strip, f"/api/places?slot={place['slot']}&chosen=1&name={quote(place['name'])}") is None:
+                        return self.reply(502, "la striscia non risponde (o ha un firmware senza posti)", "text/plain")
                     is_shown = lan_get(strip, "/api/scene?name=luogo&on=1") is not None if body.get("show") else False
                     return self.reply(200, json.dumps({"place": place, "on": is_shown}), "application/json")
                 if self.path == "/api/off":
@@ -69,8 +94,9 @@ def make_handler(strip: str) -> type[BaseHTTPRequestHandler]:
     return Globe
 
 
-def serve(strip: str, port: int = PORT, say: Callable[[str], None] = print) -> ThreadingHTTPServer | None:
+def serve(strip: str, port: int | None = None, say: Callable[[str], None] = print) -> ThreadingHTTPServer | None:
     """Start the page in the background; None when the port is taken (another helper already serves it)."""
+    port = port or PORT
     try:
         server = ThreadingHTTPServer(("0.0.0.0", port), make_handler(strip))
     except OSError as error:
@@ -94,11 +120,15 @@ canvas{display:block;margin:0 auto;touch-action:none;cursor:grab;max-width:100%}
 button{padding:12px 14px;border-radius:10px;background:var(--card);color:var(--ink);font-size:16px;border:1px solid var(--muted)}
 button.go{background:var(--accent);color:#fff;border-color:var(--accent);flex:1}button:disabled{opacity:.4}
 ul{list-style:none;padding:0;margin:8px 0}li{padding:10px 12px;border-radius:10px;background:var(--card);margin-bottom:6px}
+.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px}
+.slots button{font-size:14px;padding:10px 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slots button.on{border:2px solid var(--accent);font-weight:600}
 #pick{margin-top:12px;font-weight:600}#status{color:var(--muted);margin-top:8px;min-height:1.4em}
 </style></head><body><main>
 <h1>Dove guarda lo specchio?</h1>
 <canvas id="g"></canvas>
-<div id="pick">Gira il globo e tocca un punto, oppure cerca un nome.</div>
+<div id="slots" class="slots"></div>
+<div id="pick">Scegli quale dei 6 posti cambiare, poi tocca un punto sul globo o cerca un nome.</div>
 <div class="row"><input id="q" placeholder="Città, isola, montagna" enterkeyhint="search"><button id="find">Cerca</button></div>
 <ul id="results"></ul>
 <div class="row"><button class="go" id="show" disabled>Mostra sullo specchio</button><button id="off">Spegni</button></div>
@@ -112,7 +142,12 @@ const size=Math.min(innerWidth-32,520), ratio=devicePixelRatio||1, canvas=$('g')
 canvas.width=canvas.height=size*ratio; canvas.style.width=canvas.style.height=size+'px'; ctx.scale(ratio,ratio);
 const projection=d3.geoOrthographic().scale(size/2-4).translate([size/2,size/2]).clipAngle(90).rotate([-12,-42]);
 const path=d3.geoPath(projection,ctx), rad=Math.PI/180;
-let land=null, chosen=null;
+let land=null, chosen=null, slot=1, names=[], coords={};
+function showSlots(){
+  $('show').textContent='Metti al posto '+slot+' e mostra';$('slots').innerHTML='';
+  names.forEach((n,i)=>{const b=document.createElement('button');b.textContent=(i+1)+'. '+n;b.className=i+1===slot?'on':'';
+    b.onclick=()=>{slot=i+1;showSlots();const c=coords[n];if(c)choose({name:n,lat:c[0],lon:c[1]},true);};$('slots').appendChild(b);});
+}
 
 function subsolar(ms){  // where the sun is overhead now (same formula as tools/nature.py)
   const d=(ms-946728000000)/86400000, g=(357.528+0.9856003*d)*rad, L=(280.460+0.9856474*d)*rad;
@@ -160,11 +195,13 @@ async function send(url,body){
     if(!r.ok)throw new Error(await r.text());return await r.json();}catch(e){$('status').textContent='Non riuscito: '+e.message;return null;}
 }
 $('find').onclick=search;$('q').addEventListener('keydown',e=>{if(e.key==='Enter')search();});
-$('show').onclick=async()=>{if(!chosen)return;const r=await send('/api/place',{...chosen,show:true});
-  if(r)$('status').textContent=r.on?'Lo specchio mostra il cielo di '+r.place.name+'.':'Luogo salvato. Accendi "Luogo" nell\'app Casa.';};
+$('show').onclick=async()=>{if(!chosen)return;const r=await send('/api/place',{...chosen,slot,show:true});if(!r)return;
+  names[slot-1]=r.place.name;coords[r.place.name]=[r.place.lat,r.place.lon];showSlots();
+  $('status').textContent=(r.on?'Lo specchio mostra il cielo di '+r.place.name+'.':'Salvato.')+' In Casa è il posto '+slot+' di "Luogo".';};
 $('off').onclick=async()=>{const r=await send('/api/off',{});if(r)$('status').textContent='Scena spenta.';};
-fetch('/api/place').then(r=>r.json()).then(s=>{if(s.place)choose(s.place,true);
-  $('status').textContent=s.on===null?'La striscia non risponde.':s.on?'Lo specchio sta mostrando questo luogo.':'';}).catch(()=>{});
+fetch('/api/place').then(r=>r.json()).then(s=>{names=s.names||[];slot=s.slot||1;coords=s.coords||{};showSlots();
+  const n=names[slot-1],c=coords[n];if(c)choose({name:n,lat:c[0],lon:c[1]},true);
+  $('status').textContent=s.on===null?'La striscia non risponde.':!names.length?'La striscia non ha ancora l\'elenco dei posti (firmware vecchio).':s.on?'Lo specchio sta mostrando '+n+'.':'';}).catch(()=>{});
 fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-110m.json').then(r=>r.json())
   .then(w=>{land=topojson.feature(w,w.objects.land);draw();}).catch(()=>{$('status').textContent='Mappa non caricata: controlla la connessione.';});
 draw();setInterval(draw,60000);

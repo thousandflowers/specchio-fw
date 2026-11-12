@@ -27,7 +27,25 @@ homekit_characteristic_t cha_sc_quakes = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_sc_place = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_sc_planes = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_sc_sea = HOMEKIT_CHARACTERISTIC_(ON, false);
-homekit_characteristic_t cha_sc_spot = HOMEKIT_CHARACTERISTIC_(ON, false);
+// "Luogo" is a television in the Home app: on/off plays the scene, its inputs are the places.
+// Names start as these and are kept in /places.txt; renaming an input in the Home app picks a new place.
+homekit_characteristic_t cha_tv_active = HOMEKIT_CHARACTERISTIC_(ACTIVE, 0);
+homekit_characteristic_t cha_tv_input = HOMEKIT_CHARACTERISTIC_(ACTIVE_IDENTIFIER, 1);
+homekit_characteristic_t cha_place_name[] = {
+  HOMEKIT_CHARACTERISTIC_(CONFIGURED_NAME, "Tokyo"),    HOMEKIT_CHARACTERISTIC_(CONFIGURED_NAME, "Reykjavik"),
+  HOMEKIT_CHARACTERISTIC_(CONFIGURED_NAME, "New York"), HOMEKIT_CHARACTERISTIC_(CONFIGURED_NAME, "Honolulu"),
+  HOMEKIT_CHARACTERISTIC_(CONFIGURED_NAME, "Sydney"),   HOMEKIT_CHARACTERISTIC_(CONFIGURED_NAME, "Ushuaia"),
+};
+#define PLACE_INPUT(n) HOMEKIT_SERVICE_(INPUT_SOURCE, .characteristics = (homekit_characteristic_t *[]){ \
+    HOMEKIT_CHARACTERISTIC(NAME, "Posto " #n), &cha_place_name[(n) - 1], HOMEKIT_CHARACTERISTIC(IDENTIFIER, n), \
+    HOMEKIT_CHARACTERISTIC(IS_CONFIGURED, 1), HOMEKIT_CHARACTERISTIC(INPUT_SOURCE_TYPE, 0), \
+    HOMEKIT_CHARACTERISTIC(CURRENT_VISIBILITY_STATE, 0), NULL })
+homekit_service_t svc_place1 = PLACE_INPUT(1);
+homekit_service_t svc_place2 = PLACE_INPUT(2);
+homekit_service_t svc_place3 = PLACE_INPUT(3);
+homekit_service_t svc_place4 = PLACE_INPUT(4);
+homekit_service_t svc_place5 = PLACE_INPUT(5);
+homekit_service_t svc_place6 = PLACE_INPUT(6);
 homekit_characteristic_t cha_sc_sun = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_sc_sleep = HOMEKIT_CHARACTERISTIC_(ON, false);
 
@@ -65,7 +83,11 @@ homekit_accessory_t *accessories[] = {
     MODE_SWITCH("Posto lontano", &cha_sc_place),
     MODE_SWITCH("Aerei", &cha_sc_planes),
     MODE_SWITCH("Mare in tempesta", &cha_sc_sea),
-    MODE_SWITCH("Luogo", &cha_sc_spot),
+    HOMEKIT_SERVICE(TELEVISION, .characteristics = (homekit_characteristic_t *[]){
+      HOMEKIT_CHARACTERISTIC(NAME, "Luogo"), HOMEKIT_CHARACTERISTIC(CONFIGURED_NAME, "Luogo"),
+      &cha_tv_active, &cha_tv_input, HOMEKIT_CHARACTERISTIC(SLEEP_DISCOVERY_MODE, 1), NULL },
+      .linked = (homekit_service_t *[]){ &svc_place1, &svc_place2, &svc_place3, &svc_place4, &svc_place5, &svc_place6, NULL }),
+    &svc_place1, &svc_place2, &svc_place3, &svc_place4, &svc_place5, &svc_place6,
     MODE_SWITCH("Sole", &cha_sc_sun),
     MODE_SWITCH("Sonno", &cha_sc_sleep),
     NULL
