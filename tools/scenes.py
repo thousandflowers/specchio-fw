@@ -957,6 +957,7 @@ def run_air(host: str, seconds: float, is_sweep: bool) -> None:
 # ---------- Home app: the strip holds one switch per scene, this follows them ----------
 
 HOME_POLL_S = 2
+GLOBE_RETRY_ROUNDS = 15   # try the globe's port again every 30 s while it is taken
 HOME_STOP_S = 8     # a scene gets this long to put the lamp back before it is killed
 
 
@@ -1002,14 +1003,20 @@ def run_home(host: str) -> None:
     scenes = home_scenes()
     running: dict[str, subprocess.Popen] = {}
     print("seguo gli interruttori dell'app Casa: Ctrl-C per fermare")
+    mac = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True, text=True).stdout.strip()
     page = globe.serve(host)
     if page:
-        name = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True, text=True).stdout.strip()
-        print(f"globo per scegliere il luogo: http://{name or 'questo-mac'}.local:{globe.PORT}")
+        print(f"globo per scegliere il luogo: http://{mac or 'questo-mac'}.local:{globe.PORT}")
+    rounds = 0
     place_seen = chosen_place(host)
     parent = os.getppid()   # started by the auto-start service: when that stops, stop too and take the scenes along
     try:
         while os.getppid() == parent:
+            rounds += 1
+            if page is None and rounds % GLOBE_RETRY_ROUNDS == 0:   # the port may still be held by a helper that is closing
+                page = globe.serve(host, say=lambda _: None)
+                if page:
+                    print(f"{time.strftime('%H:%M')}  globo avviato: http://{mac or 'questo-mac'}.local:{globe.PORT}")
             place_now = chosen_place(host) or place_seen
             if place_now != place_seen and "luogo" in running:
                 print(f"{time.strftime('%H:%M')}  luogo: nuovo posto, riparto")
