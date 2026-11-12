@@ -1,0 +1,14 @@
+[
+  {"key": "kilauea", "name": "Vulcano Kilauea, Hawaii", "area": "tutto",
+   "url": "https://volcanoes.usgs.gov/observatories/hvo/cams/K2cam/images/M.jpg"},
+  {"key": "ruapehu", "name": "Monte Ruapehu, Nuova Zelanda", "area": "cielo",
+   "url": "https://images.geonet.org.nz/volcano/cameras/latest/ruapehunorth.jpg"},
+  {"key": "taranaki", "name": "Monte Taranaki, Nuova Zelanda", "area": "cielo",
+   "url": "https://images.geonet.org.nz/volcano/cameras/latest/taranaki.jpg"},
+  {"key": "canyon", "name": "Grand Canyon, Arizona", "area": "cielo",
+   "url": "https://www.nps.gov/webcams-grca/camera.jpg"},
+  {"key": "pacifico", "name": "Hawaii dal satellite", "area": "tutto",
+   "url": "https://cdn.star.nesdis.noaa.gov/GOES18/ABI/SECTOR/hi/GEOCOLOR/300x300.jpg"},
+  {"key": "sole", "name": "Il Sole adesso", "area": "centro",
+   "url": "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_512_HMIIC.jpg"}
+]
