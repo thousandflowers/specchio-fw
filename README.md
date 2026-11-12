@@ -1,5 +1,9 @@
 # specchio-fw
 
+Firmware that turns a cheap AliExpress HomeKit LED strip controller, almost unusable behind a bedroom mirror, into a light that stays reachable, wakes you with a sunrise and plays storms with sound.
+
+![The mirror strip playing a thunderstorm scene](assets/demo.gif)
+
 Custom firmware for the **Athom LS5050C(-HK) RGB strip controller** (ESP8266), plus Mac tools that play
 light scenes with sound on it. It replaces Athom's HomeKit firmware v0.8.5.
 
@@ -54,6 +58,15 @@ From a Mac on the same network (`tools/`, macOS only, experimental):
   side of the Earth as it is right now.
 
 ## Measured: before and after
+
+In short, stock firmware against 2.7.1 at about -90 dBm:
+
+- pings slower than 50 ms: 27% before, 3-4% now;
+- slowest HTTP answer: about 1 s before, 265 ms now (65 ms in the one quieter 2.1.0 session);
+- 900 of 900 commands answered in a row, with rare answers as slow as 2.5 s. The stock firmware was never put
+  through this test; the "19 of 90 lost" figure below comes from this firmware with its main loop spinning.
+
+The "before" numbers are **one session only**: the stock firmware cannot be reinstalled to measure it again.
 
 Same Mac, same place, 200 pings and 40 HTTP requests per session (`tools/bench.py`), strip at about -90 dBm.
 
@@ -178,6 +191,7 @@ Blinks tagged `src=claude` are shown only while the "Claude" switch in the Home 
     python3 tools/scenes.py luogo Tokyo      # the sky over Tokyo now
     python3 tools/scenes.py casa             # follow the scene switches of the Home app, serve the globe
     tools/install_autostart.sh               # the same, started with the Mac (remove: install_autostart.sh remove)
+    tools/prova_scene.sh mare                # one scene in 45 s, to film it: temporale, mare, luogo, sole, sonno
     python3 tools/fake_strip.py              # a stand-in strip, to try scenes without hardware
     python3 tools/bench.py <strip-address>   # the measurements above
 
@@ -224,3 +238,8 @@ The terms below were read on 12 November 2026; check them again before building 
 
 Recordings: Wikimedia Commons contributors. Each file's author and licence (public domain, CC0, CC BY, CC BY-SA)
 is in `tools/sounds.json` and is printed when it plays. Files are downloaded to a local cache on first use.
+
+## Built with Claude Code
+
+I led the project: what to build, what to measure, what to keep, and every decision along the way.
+The code, the tests and the measurement scripts were written by Claude Code (Anthropic) under that direction.

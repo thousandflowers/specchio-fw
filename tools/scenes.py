@@ -463,7 +463,7 @@ def run_spot(host: str, name: str, seconds: float, replay: str) -> None:
     """
     spot = find_spot(name) if name else saved_spot(host)
     weather = CALM
-    left = DAWN_REPLAY_S if replay else seconds
+    left = (seconds if math.isfinite(seconds) else DAWN_REPLAY_S) if replay else seconds   # --seconds squeezes the replay
     with borrowed(host):
         while left > 0:
             span = min(left, WEATHER_REFRESH_S)
@@ -503,13 +503,13 @@ def run_sun(host: str, seconds: float, is_replay: bool) -> None:
         raise OSError("nessuna misura del Sole disponibile")
     with borrowed(host):
         if is_replay:
-            print(f"Sole, ultime 6 ore in {SUN_REPLAY_S / 60:.0f} minuti: da {nature.flare_class(min(series))} "
+            print(f"Sole, ultime 6 ore in {(seconds if math.isfinite(seconds) else SUN_REPLAY_S):.0f} s: da {nature.flare_class(min(series))} "
                   f"a {nature.flare_class(max(series))}")
 
             def frame(elapsed: float, total: float) -> Hsv:
                 return nature.sun_colour(nature.flare_level(series[min(len(series) - 1, int(elapsed / total * len(series)))]), elapsed)
 
-            play(host, Effect("sole", "sole", SUN_REPLAY_S, frame), False)
+            play(host, Effect("sole", "sole", seconds if math.isfinite(seconds) else SUN_REPLAY_S, frame), False)
             return
         started = time.monotonic()
         left = seconds
