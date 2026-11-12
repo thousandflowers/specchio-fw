@@ -3,6 +3,11 @@
 
     scenes.py                        # menu: pick a scene by number
     scenes.py temporale film         # real rain and the film thunder, at random, until stopped
+    scenes.py temporale mare         # a stormy sea: the light swells with the waves
+    scenes.py luogo Tokyo            # the sky over any place right now: sun height, clouds, wind, rain, storms
+    scenes.py luogo Tokyo --alba     # that place's sunrise in three minutes (--tramonto for the sunset)
+    scenes.py sole                   # the Sun's own activity, live; --replay plays the last six hours
+    scenes.py sonno                  # falling asleep: dim amber light to breathe with, rain fading out, then dark
     scenes.py temporale sopra        # synthetic thunderstorm, one minute; also: lontano, notte
     scenes.py terremoti              # live: one pulse for every earthquake in the world
     scenes.py terremoti --replay     # the last 24 hours, one after the other
@@ -38,6 +43,7 @@ from typing import Callable, Iterator, NamedTuple
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import nature
 import purifier
 import sound
 from demo_effects import Effect, Hsv, lan_get, play, send, wave
@@ -76,8 +82,11 @@ def yield_to_wake(host: str, is_over: threading.Event) -> None:
 
 
 @contextmanager
-def borrowed(host: str) -> Iterator[None]:
-    """Raw frames take the lamp over: afterwards give it back exactly as it was, unless a wake-up took it."""
+def borrowed(host: str, ends_dark: bool = False) -> Iterator[None]:
+    """Raw frames take the lamp over: afterwards give it back exactly as it was, unless a wake-up took it.
+
+    ends_dark: a scene that ran to its end leaves the lamp off (falling asleep); stopped early, it is restored.
+    """
     state = lan_get(host, "/api/state")
     if state is None:
         raise OSError(f"la striscia non risponde a {host}")
@@ -86,13 +95,16 @@ def borrowed(host: str) -> Iterator[None]:
     before = json.loads(state)
     is_over = threading.Event()
     threading.Thread(target=yield_to_wake, args=(host, is_over), daemon=True).start()
+    has_finished = False
     try:
         yield
+        has_finished = True
     finally:
         is_over.set()
         sound.stop()
         # During a wake-up, setting the light would count as "changed by hand" and cancel it: leave it alone.
-        query = urlencode({"on": int(before["on"]), "h": before["h"], "s": before["s"], "v": before["v"]})
+        stays_on = before["on"] and not (ends_dark and has_finished)
+        query = urlencode({"on": int(stays_on), "h": before["h"], "s": before["s"], "v": before["v"]})
         if not is_wake_running(lan_get(host, "/api/state")) and not any(
                 lan_get(host, f"/api/set?{query}") is not None for _ in range(TRIES)):
             print("lampada non ripristinata: accendila o spegnila da Casa")
@@ -219,7 +231,7 @@ STORM_LIGHT = Hsv(228, 0.55, 0.08)   # the light while no thunder is sounding
 LISTEN_S = 40
 FLASH_KICK = 2.5        # a sudden rise in loudness adds this much extra light: the crack looks like a flash
 NET_LAG_S = 0.06        # a frame needs about this long to reach the strip
-STEADY_KINDS = frozenset({"pioggia"})   # rain has low thumps too, but nothing the light should flash for
+STEADY_KINDS = frozenset({"pioggia", "mare", "vento"})   # beds of sound: nothing the light should flash for
 
 
 class Sound(NamedTuple):
@@ -244,8 +256,8 @@ def thunder_level(shape: tuple[float, ...], since: float) -> float:
     return min(1.0, shape[index] + FLASH_KICK * rise)
 
 
-def storm_light(level: float) -> Hsv:
-    return Hsv(STORM_LIGHT.hue, STORM_LIGHT.saturation * (1 - level), STORM_LIGHT.value + (1 - STORM_LIGHT.value) * level)
+def storm_light(level: float, base: Hsv = STORM_LIGHT) -> Hsv:
+    return Hsv(base.hue, base.saturation * (1 - level), base.value + (1 - base.value) * level)
 
 
 def thunder_frame(shape: tuple[float, ...], sound_started_s: float) -> Callable[[float, float], Hsv]:
@@ -254,15 +266,17 @@ def thunder_frame(shape: tuple[float, ...], sound_started_s: float) -> Callable[
 
 
 class RealStorm(NamedTuple):
-    rain: str                    # keys from sounds.json
-    rain_volume: float
+    beds: tuple[tuple[str, float], ...]   # (key from sounds.json, volume): sounds that loop the whole time
     thunders: tuple[str, ...]
     mean_gap_s: float            # thunders start at random (Poisson) around this mean
     volume: tuple[float, float]  # each thunder gets a random loudness in this range: near and far
+    light: Hsv                   # the light while nothing is sounding
+    swell: float                 # how much the first bed's own loudness moves the light: waves yes, rain no
 
 
 REAL_STORMS = {
-    "film": RealStorm("pioggia", 0.6, ("tuono-teatro",), 35, (0.45, 1.0)),
+    "film": RealStorm((("pioggia", 0.6),), ("tuono-teatro",), 35, (0.45, 1.0), STORM_LIGHT, 0.0),
+    "mare": RealStorm((("mare", 0.9), ("vento", 0.5)), ("tuono-teatro",), 70, (0.3, 0.7), Hsv(196, 0.80, 0.10), 0.75),
 }
 REAL_MIN_GAP_S = 4.0
 STORM_CHUNK_S = 600.0    # an endless storm is planned this much at a time
@@ -288,13 +302,17 @@ def plan_claps(storm: RealStorm, seconds: float, longest_s: float) -> tuple[Clap
 def run_real_storm(host: str, name: str, seconds: float, lead_s: float) -> None:
     storm = REAL_STORMS[name]
     by_key = {entry.key: entry for entry in load_sounds()}
-    rain = sound.recording(by_key[storm.rain].url)
+    beds = tuple((sound.recording(by_key[key].url), volume) for key, volume in storm.beds)
     thunders = tuple(sound.recording(by_key[key].url) for key in storm.thunders)
     longest = max(thunder.seconds for thunder in thunders)
+    swell = sound.swell_shape(beds[0][0]) if storm.swell else ()
+    swell_period = beds[0][0].seconds - sound.CROSSFADE_S
     print(f"temporale {name}: Ctrl-C per fermare" if math.isinf(seconds) else f"temporale {name}: {seconds:.0f} s")
     with borrowed(host):
         sound.start()
-        sound.repeat(sound.faded(rain), rain.seconds, storm.rain_volume)
+        for bed, volume in beds:
+            sound.repeat(sound.faded(bed), bed.seconds, volume)
+        scene_started = time.monotonic()
         left = seconds
         while left > 0:
             span = min(left, STORM_CHUNK_S)
@@ -302,9 +320,13 @@ def run_real_storm(host: str, name: str, seconds: float, lead_s: float) -> None:
             for clap in claps:
                 sound.later(clap.at, thunders[clap.thunder].path, clap.volume)
 
-            def frame(elapsed: float, _total: float, claps: tuple[Clap, ...] = claps) -> Hsv:
-                return storm_light(min(1.0, sum(
-                    clap.volume * thunder_level(thunders[clap.thunder].thunder, elapsed - clap.at - lead_s) for clap in claps)))
+            def frame(elapsed: float, _total: float, claps: tuple[Clap, ...] = claps,
+                      chunk_at: float = time.monotonic() - scene_started) -> Hsv:
+                thunder = sum(clap.volume * thunder_level(thunders[clap.thunder].thunder, elapsed - clap.at - lead_s)
+                              for clap in claps)
+                beat = int(((chunk_at + elapsed - lead_s) % swell_period) / sound.ENVELOPE_STEP_S)
+                wave = storm.swell * swell[beat] if beat < len(swell) else 0.0
+                return storm_light(min(1.0, thunder + wave), storm.light)
 
             sent, lost = play(host, Effect(name, name, span, frame), False)
             print(f"{time.strftime('%H:%M')}  {len(claps)} tuoni, {sent / span:.0f} fotogrammi/s, {lost} persi")
@@ -340,6 +362,151 @@ def sounds_menu(host: str, seconds: float, lead_s: float) -> None:
                 print("\nfermato")
             except (OSError, subprocess.CalledProcessError) as error:
                 print(f"non riuscito: {error}")
+
+
+# ---------- living places: the sky over anywhere, right now ----------
+
+GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search?"
+WEATHER_URL = "https://api.open-meteo.com/v1/forecast?"
+WEATHER_REFRESH_S = 600
+DAWN_SPAN = (-14.0, 12.0)   # the sun heights a replayed sunrise runs through (a sunset runs them backwards)
+DAWN_REPLAY_S = 180
+
+
+class Spot(NamedTuple):
+    name: str
+    latitude: float
+    longitude: float
+
+
+class Weather(NamedTuple):
+    cloud: float       # 0..1
+    wind_kmh: float    # gusts
+    rain_mm: float
+    is_thunder: bool
+
+
+CALM = Weather(0.0, 0.0, 0.0, False)
+
+
+def find_spot(name: str) -> Spot:
+    reply = json.loads(fetch(GEOCODE_URL + urlencode({"name": name, "count": 1, "language": "it", "format": "json"})))
+    if not reply.get("results"):
+        raise OSError(f"luogo non trovato: {name}")
+    place = reply["results"][0]
+    return Spot(", ".join(filter(None, (place["name"], place.get("country")))), place["latitude"], place["longitude"])
+
+
+def read_weather(spot: Spot) -> Weather:
+    query = urlencode({"latitude": f"{spot.latitude:.2f}", "longitude": f"{spot.longitude:.2f}",
+                       "current": "cloud_cover,wind_gusts_10m,precipitation,weather_code"})
+    now = json.loads(fetch(WEATHER_URL + query))["current"]
+    return Weather(now["cloud_cover"] / 100, now["wind_gusts_10m"], now["precipitation"],
+                   now["weather_code"] in nature.THUNDER_CODES)
+
+
+def spot_frame(weather: Weather, strikes: tuple[Strike, ...], height: Callable[[float], float]) -> Callable[[float, float], Hsv]:
+    """The sky for the sun's height, swayed by the wind, trembling in the rain, torn by lightning in a storm."""
+    def frame(elapsed: float, _total: float) -> Hsv:
+        sky = nature.sky_colour(height(elapsed), weather.cloud)
+        value = min(1.0, sky.value * nature.weather_wobble(elapsed, weather.wind_kmh, weather.rain_mm))
+        level = flash_level(strikes, elapsed)
+        return Hsv(sky.hue, sky.saturation * (1 - level), value + (1 - value) * level)
+    return frame
+
+
+def run_spot(host: str, name: str, seconds: float, replay: str) -> None:
+    """replay: "" follows the real sun; "alba" or "tramonto" plays that place's dawn or dusk in three minutes."""
+    spot = find_spot(name)
+    weather = CALM
+    left = DAWN_REPLAY_S if replay else seconds
+    with borrowed(host):
+        while left > 0:
+            span = min(left, WEATHER_REFRESH_S)
+            try:
+                weather = read_weather(spot)
+            except (OSError, KeyError, ValueError) as error:
+                print(f"meteo non letto ({error}), tengo quello di prima")
+            if replay:
+                first, last = DAWN_SPAN if replay == "alba" else DAWN_SPAN[::-1]
+                height = lambda elapsed, first=first, last=last, span=span: first + (last - first) * elapsed / span
+            else:
+                height = lambda elapsed, at=time.time(): nature.sun_elevation(spot.latitude, spot.longitude, at + elapsed)
+            strikes = plan_strikes(STORMS["lontano"], span) if weather.is_thunder else ()
+            print(f"{time.strftime('%H:%M')}  {spot.name}: sole a {height(0):.0f}°, nuvole {weather.cloud:.0%}, "
+                  f"raffiche {weather.wind_kmh:.0f} km/h, pioggia {weather.rain_mm} mm"
+                  f"{', temporale' if weather.is_thunder else ''}  {as_hex(nature.sky_colour(height(0), weather.cloud))}")
+            play(host, Effect("luogo", spot.name, span, spot_frame(weather, strikes, height)), False)
+            left -= span
+
+
+# ---------- the Sun itself: its X-ray flux, measured by the GOES satellites ----------
+
+XRAY_URL = "https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json"
+XRAY_BAND = "0.1-0.8nm"     # the band flare classes are defined on
+SUN_REFRESH_S = 60
+SUN_REPLAY_S = 120
+
+
+def long_band(entries: list[dict]) -> tuple[float, ...]:
+    """Flux of the flare band, oldest first; gaps (zero or missing) are dropped."""
+    return tuple(entry["flux"] for entry in entries if entry.get("energy") == XRAY_BAND and (entry.get("flux") or 0) > 0)
+
+
+def run_sun(host: str, seconds: float, is_replay: bool) -> None:
+    series = long_band(json.loads(fetch(XRAY_URL)))
+    if not series:
+        raise OSError("nessuna misura del Sole disponibile")
+    with borrowed(host):
+        if is_replay:
+            print(f"Sole, ultime 6 ore in {SUN_REPLAY_S / 60:.0f} minuti: da {nature.flare_class(min(series))} "
+                  f"a {nature.flare_class(max(series))}")
+
+            def frame(elapsed: float, total: float) -> Hsv:
+                return nature.sun_colour(nature.flare_level(series[min(len(series) - 1, int(elapsed / total * len(series)))]), elapsed)
+
+            play(host, Effect("sole", "sole", SUN_REPLAY_S, frame), False)
+            return
+        started = time.monotonic()
+        left = seconds
+        while left > 0:
+            span = min(left, SUN_REFRESH_S)
+            try:
+                series = long_band(json.loads(fetch(XRAY_URL))) or series
+            except (OSError, ValueError) as error:
+                print(f"Sole non letto ({error}), tengo l'ultima misura")
+            level = nature.flare_level(series[-1])
+            print(f"{time.strftime('%H:%M')}  Sole: classe {nature.flare_class(series[-1])}  {as_hex(nature.sun_colour(level, 0))}")
+            play(host, Effect("sole", "sole", span, lambda elapsed, _total, level=level, at=time.monotonic() - started:
+                              nature.sun_colour(level, at + elapsed)), False)
+            left -= span
+
+
+# ---------- falling asleep ----------
+
+SLEEP_MINUTES = 20
+SLEEP_SOUND = "pioggia"
+SLEEP_VOLUME = 0.5
+SLEEP_SOUND_FADE = 0.4   # the sound fades over this last share of the time
+
+
+def sleep_volume(progress: float) -> float:
+    return SLEEP_VOLUME * min(1.0, max(0.0, 1 - progress) / SLEEP_SOUND_FADE)
+
+
+def run_sleep(host: str, minutes: float, sound_key: str) -> None:
+    """Dim amber light to breathe with (ten breaths a minute slowing to six), rain fading out, then dark."""
+    total = minutes * 60
+    by_key = {entry.key: entry for entry in load_sounds()}
+    if sound_key not in by_key:
+        raise OSError(f"suono sconosciuto: {sound_key} (uno tra {', '.join(by_key)})")
+    bed = sound.recording(by_key[sound_key].url)
+    print(f"sonno: {minutes:.0f} minuti, poi buio. Inspira quando la luce sale, espira quando scende.")
+    with borrowed(host, ends_dark=True):
+        sound.start()
+        started = time.monotonic()
+        sound.repeat(sound.faded(bed), bed.seconds, lambda: sleep_volume((time.monotonic() - started) / total))
+        play(host, Effect("sonno", "sonno", total, nature.sleep_light), False)
 
 
 # ---------- earthquakes ----------
@@ -863,6 +1030,12 @@ def check() -> None:
     assert set(AIR_LABELS) == set(purifier.READINGS) >= {rule.reading for rule in AIR_RULES}
     assert not is_wake_running(b'{"wake_phase":""}') and not is_wake_running(b'{"wake_phase":"waiting"}')
     assert is_wake_running(b'{"wake_phase":"sunrise"}') and not is_wake_running(None) and not is_wake_running(b"x")
+    assert sleep_volume(0) == SLEEP_VOLUME and abs(sleep_volume(0.8) - SLEEP_VOLUME / 2) < 1e-9 and sleep_volume(1) == 0
+    stormy = spot_frame(Weather(1.0, 60, 3, True), (Strike(5.0, 0.0, ((0.0, 1.0),)),), lambda elapsed: 40.0)
+    assert stormy(5.01, 9).saturation < 0.01 and stormy(5.01, 9).value > 0.9, "lightning whitens the sky"
+    assert spot_frame(CALM, (), lambda elapsed: -30.0)(1, 9) == nature.SKY[0][1], "a calm night is the night colour"
+    assert long_band([{"energy": "0.1-0.8nm", "flux": 2e-6}, {"energy": "0.05-0.4nm", "flux": 9}, {"energy": "0.1-0.8nm", "flux": 0}]) == (2e-6,)
+    nature.demo()
     home = home_scenes()
     assert to_drop(frozenset({"temporale", "aria"}), frozenset(), home) == frozenset(), "the air watch lives with a scene"
     assert to_drop(frozenset({"temporale", "posto"}), frozenset({"temporale"}), home) == {"temporale"}, "the new one wins"
@@ -870,7 +1043,7 @@ def check() -> None:
     frame = thunder_frame((0.0, 0.0, 1.0, 0.2), 0.0)
     assert frame(-1.0, 9) == STORM_LIGHT and frame(0.0, 9) == STORM_LIGHT and frame(9.0, 9) == STORM_LIGHT
     keys = {entry.key for entry in load_sounds()}
-    assert all({storm.rain, *storm.thunders} <= keys for storm in REAL_STORMS.values()), "storms use listed sounds"
+    assert all({*(key for key, _ in storm.beds), *storm.thunders} <= keys for storm in REAL_STORMS.values()), "storms use listed sounds"
     claps = plan_claps(REAL_STORMS["film"], 3600, 25)
     assert claps and all(clap.at < 3600 - 25 for clap in claps), "no thunder cut by the end of a stretch"
     assert min(b.at - a.at for a, b in zip(claps, claps[1:])) > REAL_MIN_GAP_S - 1e-6
@@ -886,6 +1059,13 @@ def menu(host: str) -> None:
         *((f"temporale {name}: suoni veri, senza fine", lambda name=name: run_real_storm(host, name, math.inf, SOUND_LEAD_S))
           for name in REAL_STORMS),
         ("suoni: ascolta le registrazioni una alla volta", lambda: sounds_menu(host, LISTEN_S, SOUND_LEAD_S)),
+        (f"sonno: luce per respirare e pioggia che sfuma, {SLEEP_MINUTES} minuti, poi buio",
+         lambda: run_sleep(host, SLEEP_MINUTES, SLEEP_SOUND)),
+        ("luogo: il cielo di un posto adesso (ti chiedo il nome)", lambda: run_spot(host, input("posto: ").strip(), math.inf, "")),
+        ("luogo: alba di un posto in 3 minuti (ti chiedo il nome)", lambda: run_spot(host, input("posto: ").strip(), 0, "alba")),
+        ("luogo: tramonto di un posto in 3 minuti (ti chiedo il nome)", lambda: run_spot(host, input("posto: ").strip(), 0, "tramonto")),
+        ("sole: la sua attività adesso", lambda: run_sun(host, math.inf, False)),
+        ("sole: le ultime 6 ore in 2 minuti", lambda: run_sun(host, 0, True)),
         *((f"temporale {name}: suoni finti, 1 minuto", lambda name=name: run_storm(host, name, 60, False)) for name in STORMS),
         ("terremoti: le ultime 24 ore di fila", lambda: run_quakes(host, True, 2.5, False)),
         ("terremoti: dal vivo", lambda: run_quakes(host, False, 2.5, False)),
@@ -949,6 +1129,17 @@ def main() -> None:
     air.add_argument("--sempre", action="store_true", help="keep the mirror the colour of the air instead of only warning")
     air.add_argument("--anche-di-notte", action="store_true", help=f"blink also between {QUIET_HOURS[0]}:00 and {QUIET_HOURS[1]}:00")
     air.add_argument("--seconds", type=float, default=math.inf)
+    spot = scenes.add_parser("luogo")
+    spot.add_argument("name", help="any place name: a city, an island, a mountain")
+    spot.add_argument("--alba", action="store_const", dest="replay", const="alba", default="")
+    spot.add_argument("--tramonto", action="store_const", dest="replay", const="tramonto")
+    spot.add_argument("--seconds", type=float, default=math.inf)
+    sun = scenes.add_parser("sole")
+    sun.add_argument("--replay", action="store_true", help="the last six hours in two minutes")
+    sun.add_argument("--seconds", type=float, default=math.inf)
+    sleep = scenes.add_parser("sonno")
+    sleep.add_argument("--minuti", type=float, default=SLEEP_MINUTES)
+    sleep.add_argument("--suono", default=SLEEP_SOUND, help="a key from sounds.json")
     scenes.add_parser("casa")
     scenes.add_parser("check")
     args = parser.parse_args()
@@ -988,6 +1179,12 @@ def main() -> None:
                 run_air(args.host, args.seconds, args.prova)
             else:
                 watch_air(args.host, args.seconds, args.anche_di_notte)
+        elif args.scene == "luogo":
+            run_spot(args.host, args.name, args.seconds, args.replay)
+        elif args.scene == "sole":
+            run_sun(args.host, args.seconds, args.replay)
+        elif args.scene == "sonno":
+            run_sleep(args.host, args.minuti, args.suono)
         elif args.scene == "casa":
             run_home(args.host)
         elif args.scene == "check":

@@ -10,6 +10,7 @@ import atexit
 import hashlib
 import json
 import math
+import os
 import random
 import re
 import shutil
@@ -37,6 +38,7 @@ BED_MARGIN = 2.0        # the low band must be this many times louder than the b
 DOWNLOAD_TIMEOUT_S = 180
 USER_AGENT = "specchio-scenes/1.0 (hobby light script, one download per file)"   # Wikimedia refuses anonymous agents
 
+IS_MUTED = bool(os.environ.get("SPECCHIO_MUTO"))   # scenes run in full but nothing is played: for tests at night
 _folder = Path(tempfile.mkdtemp(prefix="specchio-sound-"))
 _players: list[subprocess.Popen] = []
 _is_stopping = threading.Event()
@@ -121,7 +123,7 @@ def save(samples: list[float], name: str, fade_s: float = 0.0) -> Path:
 
 
 def play(path: Path, volume: float = 1.0, seconds: float | None = None) -> None:
-    if _is_stopping.is_set():
+    if _is_stopping.is_set() or IS_MUTED or volume < 0.02:
         return
     limit = ["-t", f"{seconds:.2f}"] if seconds else []
     _players[:] = [player for player in _players if player.poll() is None]
@@ -185,6 +187,24 @@ def recording(url: str) -> Recording:
     return Recording(wav, seconds, tuple(json.loads(shape.read_text())))
 
 
+SWELL_SMOOTH_S = 0.6
+
+
+def swell_shape(source: Recording) -> tuple[float, ...]:
+    """Loudness of the whole sound, smoothed: the breathing of waves. 0 = its quietest moments, 1 = its loudest."""
+    with wave.open(str(source.path)) as file:
+        frames = array.array("h", file.readframes(file.getnframes()))
+    window = int(ENVELOPE_STEP_S * RATE)
+    levels = [max(max(chunk), -min(chunk)) for chunk in (frames[at:at + window] for at in range(0, len(frames), window))]
+    span = max(1, int(SWELL_SMOOTH_S / ENVELOPE_STEP_S))
+    smooth = [sum(levels[max(0, index - span):index + 1]) / (index + 1 - max(0, index - span)) for index in range(len(levels))]
+    ordered = sorted(smooth)
+    low, high = ordered[int(0.05 * (len(ordered) - 1))], ordered[int(0.99 * (len(ordered) - 1))]
+    if high <= low:
+        return (0.0,) * len(smooth)
+    return tuple(min(1.0, max(0.0, (level - low) / (high - low))) for level in smooth)
+
+
 def busiest(shape: tuple[float, ...], seconds: float) -> float:
     """Start (in seconds) of the stretch of that length with the most thunder in it."""
     span = int(seconds / ENVELOPE_STEP_S)
@@ -215,11 +235,14 @@ def excerpt(source: Recording, start: float, seconds: float) -> Path:
     return path
 
 
-def repeat(path: Path, seconds: float, volume: float) -> None:
-    """Play a file with faded ends until stop(): each pass starts under the tail of the one before."""
+def repeat(path: Path, seconds: float, volume: float | Callable[[], float]) -> None:
+    """Play a file with faded ends until stop(): each pass starts under the tail of the one before.
+
+    volume may be a function, asked at the start of every pass: that is how a bed of sound fades out slowly.
+    """
     def run() -> None:
         while not _is_stopping.is_set():
-            play(path, volume)
+            play(path, volume() if callable(volume) else volume)
             _is_stopping.wait(seconds - CROSSFADE_S)
 
     threading.Thread(target=run, daemon=True).start()
