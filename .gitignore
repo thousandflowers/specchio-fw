@@ -1,5 +1,17 @@
+# Build output. Firmware images have the Wi-Fi and update passwords compiled in: never commit or release them.
 .pio/
+*.bin
+*.elf
+
+# Credentials and data of one home
 secrets.ini
-tools/qui.txt
 tools/purifier.json
+tools/qui.txt
+.env
+*.pem
+*.key
+
+# Local notes and caches
+REPORT-PUBBLICAZIONE.md
 __pycache__/
+.DS_Store
