@@ -9,7 +9,8 @@
 set -u
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 FW="${1:-$PROJ/.pio/build/specchio/firmware.bin}"
-HOST="${HOST:-192.0.2.66}"
+HOST="${HOST:-$(sed -n 's/.*"strip": *"\([^"]*\)".*/\1/p' "$PROJ/tools/local.json" 2>/dev/null)}"   # this home's strip
+HOST="${HOST:-specchio.local}"
 SKETCH_LIMIT=$((0x98000))   # above this the upload would overwrite the fallback image (see src/guard.cpp)
 WAIT_S=330                  # guard grace 240 s + install + boot, with margin
 

@@ -13,7 +13,7 @@
     scenes.py terremoti --replay     # the last 24 hours, one after the other
     scenes.py posto kilauea          # the mirror takes the colour of a far-away webcam
     scenes.py posto --giro           # every place in places.json, plus a preview page
-    scenes.py aerei --qui 48.86,2.35  # planes overhead: the flag colours of the country they fly to
+    scenes.py aerei --qui 48.86,2.35 # planes overhead: the flag colours of the country they fly to
     scenes.py suoni                  # real recordings, one at a time: the light follows the thunder
     scenes.py aria                   # watch the air: normal light, coloured blinks when it gets bad
     scenes.py aria --sempre          # the mirror stays the colour of the air (PM2.5)
@@ -46,9 +46,9 @@ from urllib.request import Request, urlopen
 import nature
 import purifier
 import sound
-from demo_effects import Effect, Hsv, lan_get, play, send, wave
+from demo_effects import Effect, Hsv, lan_get, local_setting, play, send, wave
 
-HOST = "192.0.2.66"
+HOST = local_setting("strip", "specchio.local")   # this home's values live in tools/local.json
 NET_TIMEOUT_S = 12
 TRIES = 3
 
@@ -704,7 +704,7 @@ def run_tour(host: str) -> None:
 
 # ---------- planes overhead: the flag of the country they fly to ----------
 
-HERE_FILE = Path(__file__).with_name("qui.txt")  # "latitude,longitude" of the house; kept out of git
+HERE = local_setting("home", "")   # "latitude,longitude" of the house, from tools/local.json
 PLANES_URL = "https://api.adsb.lol/v2/point/{latitude:.2f}/{longitude:.2f}/{miles:.0f}"
 ROUTE_URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
 FLAG_URL = "https://flagcdn.com/w80/{iso}.jpg"  # the PNG is paletted and sips cannot turn it into BMP
@@ -1076,8 +1076,8 @@ def menu(host: str) -> None:
         entries.append(("aria: controlla e avvisa quando peggiora", lambda: watch_air(host, math.inf, False)))
         entries.append(("aria: lo specchio resta del colore dell'aria", lambda: run_air(host, math.inf, False)))
         entries.append(("aria: prova di tutta la scala in 20 secondi", lambda: run_air(host, 0, True)))
-    if HERE_FILE.exists():
-        here = read_here(HERE_FILE.read_text())
+    if HERE:
+        here = read_here(HERE)
         entries.append(("aerei sopra casa: bandiera della destinazione", lambda: run_planes(host, here, 15, math.inf)))
     while True:
         print()
@@ -1116,7 +1116,7 @@ def main() -> None:
     place.add_argument("--giro", action="store_true")
     place.add_argument("--seconds", type=float, default=math.inf)
     planes = scenes.add_parser("aerei")
-    planes.add_argument("--qui", help=f"latitude,longitude of the house (default: the content of {HERE_FILE.name})")
+    planes.add_argument("--qui", help='latitude,longitude of the house (default: "home" in tools/local.json)')
     planes.add_argument("--km", type=float, default=15)
     planes.add_argument("--seconds", type=float, default=math.inf)
     sounds = scenes.add_parser("suoni")
@@ -1164,9 +1164,9 @@ def main() -> None:
                 parser.error(f"posto: uno tra {', '.join(known)} oppure un indirizzo http")
             run_place(args.host, known.get(args.place) or Place("url", args.place, args.area, args.place), args.seconds)
         elif args.scene == "aerei":
-            if not args.qui and not HERE_FILE.exists():
-                parser.error(f"aerei: serve --qui LAT,LON oppure il file {HERE_FILE.name} con dentro LAT,LON")
-            run_planes(args.host, read_here(args.qui or HERE_FILE.read_text()), args.km, args.seconds)
+            if not args.qui and not HERE:
+                parser.error('aerei: serve --qui LAT,LON oppure "home": "LAT,LON" in tools/local.json')
+            run_planes(args.host, read_here(args.qui or HERE), args.km, args.seconds)
         elif args.scene == "suoni" and args.key:
             by_key = {entry.key: entry for entry in load_sounds()}
             if args.key not in by_key:

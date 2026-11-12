@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Preview candidate light effects on the strip, driven live from the Mac.
 
-    demo_effects.py 192.0.2.66            # play every effect, announcing each name
-    demo_effects.py 192.0.2.66 candela    # play one
+    demo_effects.py specchio.local            # play every effect, announcing each name
+    demo_effects.py specchio.local candela    # play one
 
 Each effect is a function of time returning hue (0-360), saturation (0-1) and
 brightness (0-1). The same functions are the reference for porting an effect
@@ -10,10 +10,12 @@ into the firmware. Frames go to /api/raw, which bypasses HomeKit and flash.
 """
 import argparse
 import colorsys
+import json
 import math
 import random
 import subprocess
 import time
+from pathlib import Path
 from typing import Callable, NamedTuple
 
 PWM_MAX = 1023
@@ -99,6 +101,17 @@ def to_duty(level: float) -> int:
     lightness = min(level, 1.0) * 100
     luminance = lightness / 903.3 if lightness <= 8 else ((lightness + 16) / 116) ** 3
     return max(1, round(luminance * PWM_MAX))
+
+
+LOCAL_FILE = Path(__file__).with_name("local.json")   # this home's addresses and coordinates: not in git
+
+
+def local_setting(key: str, default: str) -> str:
+    """A value that belongs to one home, read from tools/local.json (see local.example.json), never from the code."""
+    try:
+        return str(json.loads(LOCAL_FILE.read_text())[key])
+    except (OSError, ValueError, KeyError):
+        return default
 
 
 def lan_get(host: str, path: str) -> bytes | None:

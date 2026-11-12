@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure how responsive the strip is, to compare firmwares and Wi-Fi settings.
 
-    bench.py 192.0.2.66 --path /get_status --post i=9999   # stock Athom firmware
+    bench.py <strip-address> --path /get_status --post i=9999   # stock Athom firmware
     bench.py specchio.local                                    # this firmware
 
 Reports ping loss/latency and HTTP latency. Pings slower than SLOW_PING_MS

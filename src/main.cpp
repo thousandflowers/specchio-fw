@@ -12,6 +12,7 @@ extern "C" {
 extern homekit_server_config_t hk_config;
 extern homekit_characteristic_t cha_on, cha_bri, cha_hue, cha_sat;
 extern homekit_characteristic_t cha_fx_alba, cha_fx_focus, cha_shimmer, cha_hourly, cha_claude;
+extern homekit_characteristic_t cha_serial;
 extern homekit_characteristic_t cha_sc_storm, cha_sc_air, cha_sc_quakes, cha_sc_place, cha_sc_planes;
 int homekit_storage_reset();
 }
@@ -564,6 +565,9 @@ static void homekitStart() {
   cha_shimmer.value.bool_value = cfg.shimmer > 0;
   cha_hourly.value.bool_value = cfg.isHourly;
   cha_claude.value.bool_value = cfg.isClaudeOn;
+  static char serial[7];  // the chip id: six hex digits, the tail of its hardware address
+  snprintf(serial, sizeof serial, "%06X", (unsigned)ESP.getChipId());
+  cha_serial.value.string_value = serial;
   hk_config.on_event = hkEvent;
   arduino_homekit_setup(&hk_config);
   isHomekitUp = true;

@@ -28,6 +28,8 @@ import subprocess
 import threading
 import urllib.request
 from pathlib import Path
+
+from demo_effects import local_setting
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import NamedTuple, Optional
 from urllib.parse import parse_qs, urlparse
@@ -328,7 +330,7 @@ if __name__ == "__main__":
     args = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     args.add_argument("--listen", type=int, metavar="PORT", help="wait for the phone to send the alarm time")
     args.add_argument("--at", help="one alarm at HH:MM, without the phone")
-    args.add_argument("--host", default="192.0.2.66")
+    args.add_argument("--host", default=local_setting("strip", "specchio.local"))
     args.add_argument("--lead", type=float, default=30, help="sunrise minutes before the alarm")
     args.add_argument("--insist", type=float, default=10, help="minutes after the alarm before blinking")
     args.add_argument("--insist-for", type=float, default=20, help="minutes of blinking")

@@ -33,9 +33,14 @@ In the controller, with no other computer running:
 From a Mac on the same network (`tools/`, macOS only, experimental):
 
 - **Scenes with sound** (`tools/scenes.py`): thunderstorms from real recordings where the light follows the
-  loudness of the thunder, a stormy sea, the sky over any named place right now (sun height, clouds, wind, rain),
-  dawn and dusk replays, the Sun's X-ray activity, earthquakes as they happen, the flag of the country the planes
-  overhead fly to, a breath-paced light for falling asleep.
+  loudness of the thunder, earthquakes as they happen, the colour of far-away webcams, the flag of the country
+  the planes overhead fly to.
+- **Experimental, not yet tried on the real light** (run only against `tools/fake_strip.py`, with sound muted):
+  - **Stormy sea** (`temporale mare`): surf and gale recordings, the light swells with the waves;
+  - **Place** (`luogo <name>`): the sky over any named place right now (sun height, clouds, wind, rain, storms),
+    with dawn and dusk replays;
+  - **Sun** (`sole`): the Sun's X-ray activity, live or the last six hours;
+  - **Sleep** (`sonno`): a dim breath-paced light and rain that fade to dark.
 - **Air quality** from a Xiaomi purifier read on the local network (`tools/purifier.py`): the lamp keeps its light
   and blinks a colour when dust or humidity pass a limit.
 - **Home app switches** for the scenes: the strip holds the switch, `scenes.py casa` on the Mac plays the scene.
@@ -98,6 +103,14 @@ which git ignores:
 
 **Never commit or share a built `firmware.bin`**: it contains those four values. `.gitignore` excludes `*.bin`.
 
+The Mac tools take what belongs to one home (the strip's address, the coordinates for the planes scene) from
+`tools/local.json`, also ignored by git:
+
+    cp tools/local.example.json tools/local.json     # then edit
+
+Without it they look for the strip at `specchio.local`. The serial number shown in the Home app is the chip's
+own id, read at start-up: nothing of a single device is written in the source.
+
 ## Build, test, flash
 
     pio run
@@ -115,7 +128,7 @@ Later updates, from this firmware:
 
 `tools/try_fw.sh` does the same with the self-restore guard in place and reports whether the new firmware
 joined or was rolled back; it needs a known-good image stored first (see the header of `src/guard.cpp`).
-The tools default to the author's strip address: pass yours with `--host` or `HOST=`.
+The tools read the strip's address from `tools/local.json`, or take it with `--host` / `HOST=`.
 
 Then add the accessory in the Home app with your `HOMEKIT_CODE`.
 
@@ -161,7 +174,9 @@ Scenes need `ffmpeg` and use macOS programs (`afplay`, `sips`). Recordings are d
 Commons; nothing is stored in this repository. Author and licence of each are in `tools/sounds.json` and are
 printed when it plays.
 
-## Credits and licences
+## Data and credits
+
+Code:
 
 - This project: MIT, see `LICENSE`.
 - [HomeKit-ESP8266](https://github.com/Mixiaoxiao/Arduino-HomeKit-ESP8266) by Mixiaoxiao (MIT), used unmodified
@@ -169,7 +184,27 @@ printed when it plays.
 - ESP8266 Arduino core 2.7.4 (LGPL-2.1).
 - The Xiaomi sign-in in `tools/xiaomi_login.py` follows the protocol documented by
   [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) (MIT).
-  It uses an unofficial interface.
-- Data: USGS (earthquakes, webcams), NOAA (GOES X-ray flux, satellite images), NASA SDO, US National Park
-  Service, GeoNet New Zealand, Open-Meteo, adsb.lol, adsbdb, flagcdn, miot-spec.org.
-- Recordings: Wikimedia Commons contributors, listed in `tools/sounds.json`.
+  It uses an unofficial interface of the Mi Home cloud.
+
+Live data. Nothing is stored or redistributed: pictures are reduced to one mean colour, numbers to a light.
+The terms below were read on 12 November 2026; check them again before building on these services.
+
+- **[GeoNet](https://www.geonet.org.nz/policy)** (New Zealand volcano cameras): GNS Science states GeoNet content
+  is under Creative Commons Attribution 3.0 New Zealand and asks for this acknowledgement: "We acknowledge the
+  New Zealand GeoNet programme and its sponsors NHC, GNS Science, LINZ, NEMA and MBIE for providing data/images".
+  The full data policy page was not read: confirm it covers camera images before any other use.
+- **[adsb.lol](https://github.com/adsblol/api)** (planes near a point): a community network. The public API needs
+  no key today and its rate limits are "dynamic"; the maintainers announce that a key, given to people who feed
+  data, will be required in the future. No terms of use for the public API were found; their published datasets
+  are under ODbL 1.0. The planes scene asks once every 30 seconds.
+- **[adsbdb](https://www.adsbdb.com)** (route of a flight): a public API. Stated limits: 512 requests bring a
+  60-second block, 1024 a 300-second block. It credits PlaneBase and airport-data for its own data. No licence
+  was found. The planes scene asks once per new callsign.
+- **USGS** (earthquake feed, Hawaiian volcano cameras), **NOAA** (GOES X-ray flux and satellite images),
+  **NASA SDO**, **US National Park Service**: works of US federal agencies, in the public domain in the United
+  States; they ask to be credited.
+- **[Open-Meteo](https://open-meteo.com)** (place names, weather): data under CC BY 4.0, free for non-commercial use.
+- **flagcdn**, **miot-spec.org**: flag pictures and Xiaomi's public device descriptions.
+
+Recordings: Wikimedia Commons contributors. Each file's author and licence (public domain, CC0, CC BY, CC BY-SA)
+is in `tools/sounds.json` and is printed when it plays. Files are downloaded to a local cache on first use.

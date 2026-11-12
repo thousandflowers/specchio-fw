@@ -6,7 +6,7 @@
 # Credentials and data of one home
 secrets.ini
 tools/purifier.json
-tools/qui.txt
+tools/local.json
 .env
 *.pem
 *.key

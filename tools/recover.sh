@@ -8,6 +8,7 @@ PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$1"
 FW="${2:-}"
 AP_IP=192.168.4.1
+ROUTER=$(route -n get default 2>/dev/null | awk '/gateway/ {print $2}')   # read now, while still on the home network
 mkdir -p "$OUT"
 
 secret() { sed -n "s/.*-D$1=[\\\\\"']*\([^\\\\\"']*\).*/\1/p" "$PROJ/secrets.ini" | head -1; }
@@ -28,7 +29,7 @@ rejoin() {
   for _ in 1 2 3; do
     networksetup -setairportnetwork en0 "$HOME_SSID" "$HOME_PASS" >/dev/null 2>&1
     sleep 4
-    ping -c 1 -t 2 192.0.2.1 >/dev/null 2>&1 && { echo "back on home wifi"; return; }
+    ping -c 1 -t 2 "${ROUTER:-192.168.1.1}" >/dev/null 2>&1 && { echo "back on home wifi"; return; }
   done
   echo "HOME WIFI NOT REJOINED"
 }

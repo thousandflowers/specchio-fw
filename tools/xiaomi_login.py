@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Get the local key (token) of one Xiaomi device, signing in through Xiaomi's own page.
 
-    xiaomi_login.py 192.0.2.131      # the device's address on the home network
+    xiaomi_login.py <device-address>     # the device's address on the home network
     xiaomi_login.py check                # self-check, no network
 
 The browser opens Xiaomi's sign-in page: the password is typed there, never here.

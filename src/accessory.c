@@ -11,6 +11,8 @@ homekit_characteristic_t cha_bri = HOMEKIT_CHARACTERISTIC_(BRIGHTNESS, 100);
 homekit_characteristic_t cha_hue = HOMEKIT_CHARACTERISTIC_(HUE, 0);
 homekit_characteristic_t cha_sat = HOMEKIT_CHARACTERISTIC_(SATURATION, 0);
 homekit_characteristic_t cha_name = HOMEKIT_CHARACTERISTIC_(NAME, "specchio");
+// Replaced at start-up by the chip's own id (main.cpp): nothing of one device is written in the source.
+homekit_characteristic_t cha_serial = HOMEKIT_CHARACTERISTIC_(SERIAL_NUMBER, "000000");
 
 // One switch per mode, so each can be used from the Home app, Siri and scenes.
 homekit_characteristic_t cha_fx_alba = HOMEKIT_CHARACTERISTIC_(ON, false);
@@ -39,7 +41,7 @@ homekit_accessory_t *accessories[] = {
     HOMEKIT_SERVICE(ACCESSORY_INFORMATION, .characteristics = (homekit_characteristic_t *[]){
       &cha_name,
       HOMEKIT_CHARACTERISTIC(MANUFACTURER, "Athom (custom fw)"),
-      HOMEKIT_CHARACTERISTIC(SERIAL_NUMBER, "000000"),
+      &cha_serial,
       HOMEKIT_CHARACTERISTIC(MODEL, "LS5050C"),
       HOMEKIT_CHARACTERISTIC(FIRMWARE_REVISION, "2.4.0"),
       HOMEKIT_CHARACTERISTIC(IDENTIFY, identify),

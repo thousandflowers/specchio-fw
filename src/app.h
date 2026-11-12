@@ -11,6 +11,9 @@
 #define HOSTNAME "specchio"
 #define SETUP_AP_SSID "specchio-setup"
 #define TIMEZONE TZ_Europe_Rome  // for the hourly tick
+#ifndef NTP_FALLBACK
+#define NTP_FALLBACK "time.google.com"  // second time server; secrets.ini can name one on the home network
+#endif
 
 // Per-device secrets come from secrets.ini (gitignored); these are fallbacks
 // so the project still builds without it.
