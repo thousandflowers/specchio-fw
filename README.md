@@ -2,7 +2,7 @@
 
 Firmware that turns a cheap AliExpress HomeKit LED strip controller, almost unusable behind a bedroom mirror, into a light that stays reachable, wakes you with a sunrise and plays storms with sound.
 
-<!-- demo: ![The mirror strip playing a thunderstorm scene](assets/demo.gif) -->
+![The mirror strip playing a thunderstorm scene](assets/demo.gif)
 
 Custom firmware for the **Athom LS5050C(-HK) RGB strip controller** (ESP8266), plus Mac tools that play
 light scenes with sound on it. It replaces Athom's HomeKit firmware v0.8.5.
