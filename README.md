@@ -1,80 +1,175 @@
 # specchio-fw
 
-Firmware for the Athom LS5050C(-HK) RGB strip controller on the bedroom mirror.
-Replaces Athom's HomeKit firmware v0.8.5.
+Custom firmware for the **Athom LS5050C(-HK) RGB strip controller** (ESP8266), plus Mac tools that play
+light scenes with sound on it. It replaces Athom's HomeKit firmware v0.8.5.
 
-## Why
+"Specchio" is Italian for mirror: the strip lives behind a bedroom mirror, far from the router.
+The stock firmware answered late and dropped off the network; this one was written from measurements.
 
-Measured on the stock firmware (`docs/baseline-stock.txt`, strip at -88..-91 dBm):
-
-- 27% of pings took 100-200 ms in an alternating pattern: the radio sleeps
-  between beacons (modem sleep), so every exchange waits for the next one.
-- HTTP requests stalled for 1, 2 and 4 s: lost packets and TCP retransmission.
-- ~17 Wi-Fi reconnects in 14 hours.
-- The web log prints the Wi-Fi password, without authentication.
+<!-- Photos and video go here: the controller board, the strip behind the mirror,
+     a thunderstorm scene, the orange blink when Claude Code finishes.
+     ![The strip behind the mirror](docs/media/mirror.jpg) -->
 
 ## What it does
 
-- **Wi-Fi**: modem sleep off, continuous reconnect, PHY mode and TX power selectable (defaults as stock).
-  When the signal is weak it scans every 30 min and moves to a clearly stronger
-  access point of the same network (the ESP8266 never roams by itself), so a
-  mesh repeater added later is picked up without touching the strip.
-- **HomeKit**: on/off, brightness, hue, saturation. Code in `secrets.ini`.
-- **Modes**, each also a switch in the Home app: Alba (sunrise that leaves the lamp on),
-  Focus (green to red timer with a half-time dip and a red flash at the end), Vibrazione
-  (the idle lamp is never perfectly still), Orologio (two blinks at every change of hour).
-- **Local API** for scripts, plus a one-page UI at `/` with a live signal reading.
-- **Light**: CIE lightness curve (1% is dim, not black), 250 ms fades, state
-  restored at power-on before Wi-Fi is up.
+In the controller, with no other computer running:
+
+- **HomeKit** light (on/off, brightness, hue, saturation) and a switch for every mode.
+- **Wake-up light**: sunrise 30 minutes before the alarm, full light at the alarm, growing blinks
+  10 minutes later until you stop it. The alarm time comes from the phone (`docs/comando-rapido-iphone.md`, in Italian)
+  or from the page at `/`.
+- **Modes**: Alba (sunrise), Focus (a timer from green to red), Vibrazione (the idle lamp is never perfectly
+  still), Orologio (two blinks at every change of hour).
+- **Event blinks** over whatever is showing (`/api/flash`), used for example when Claude Code finishes.
+- **Wi-Fi that stays reachable** on a weak signal: no modem sleep, continuous reconnect, a rest in the main
+  loop, and a scan every 30 minutes for a stronger access point of the same network.
 - **Cannot-brick measures**, since no serial port is wired:
-  - three unrequested reboots in a row (crash, watchdog, out of memory) -> safe mode: no flash storage, no HomeKit;
-    lamp, web page and `/update` still work, setup AP is up;
-  - 5 min offline -> setup AP `specchio-setup` (password = `OTA_PASS`), http://192.168.4.1;
-  - button: short = toggle, 5 s = setup AP (one blink), 15 s = factory reset (three blinks);
-  - `/api/log` and `/api/state` expose reset reason, crash address, Wi-Fi drop reasons.
+  - three unrequested reboots in a row -> safe mode (lamp, web page and `/update` still work);
+  - 5 minutes offline -> setup access point `specchio-setup` (password = `OTA_PASS`) at http://192.168.4.1;
+  - **self-restore**: a known-good image is kept at the top of flash; an update that cannot be reached within
+    4 minutes is replaced by it through the bootloader (`src/guard.cpp`, `tools/try_fw.sh`);
+  - button: short = toggle, 5 s = setup access point, 15 s = factory reset.
 
-## API
+From a Mac on the same network (`tools/`, macOS only, experimental):
 
-Open on the LAN:
+- **Scenes with sound** (`tools/scenes.py`): thunderstorms from real recordings where the light follows the
+  loudness of the thunder, a stormy sea, the sky over any named place right now (sun height, clouds, wind, rain),
+  dawn and dusk replays, the Sun's X-ray activity, earthquakes as they happen, the flag of the country the planes
+  overhead fly to, a breath-paced light for falling asleep.
+- **Air quality** from a Xiaomi purifier read on the local network (`tools/purifier.py`): the lamp keeps its light
+  and blinks a colour when dust or humidity pass a limit.
+- **Home app switches** for the scenes: the strip holds the switch, `scenes.py casa` on the Mac plays the scene.
 
-    GET /api/state
-    GET /api/log
-    GET /api/set?on=1&hex=ff8000&v=60        also h=0-360, s=0-100
-    GET /api/raw?r=1023&g=0&b=0              direct PWM duty, to identify channels
-    GET /api/effect?name=alba&minutes=20     timed effect: alba (sunrise), focus (timer); name=off stops
-    GET /api/flash?hex=ff8000&n=3            coloured blinks over whatever is showing, for events
-    GET /api/set?shimmer=30&hourly=1         idle "vibration" 0-100, tick at every change of hour
-    GET /api/roam                            scan for a better access point now
+## Measured: before and after
 
-Password protected (`admin` / `OTA_PASS`):
+Same Mac, same place, 200 pings and 40 HTTP requests per session (`tools/bench.py`), strip at about -90 dBm.
 
-    GET  /api/config?pins=12,4,14            GPIOs for R,G,B
-    GET  /api/config?phy=g                   b | g | n, applies after reboot
-    GET  /api/config?boot=last               last | on | off at power-on
-    GET  /api/config?fade=250                ms, 0-5000
-    GET  /api/config?tx=0                    max TX power in dBm, 0 = SDK default, applies after reboot
-    POST /api/wifi          ssid=..&pass=..
-    POST /api/reboot
-    POST /api/factory-reset                  HomeKit pairing + settings
-    /update                                  firmware upload
+| | Stock Athom 0.8.5 | specchio-fw 2.1.0 | specchio-fw 2.7.1 |
+|---|---|---|---|
+| Sessions | 1 | 1 | 3 (mean, worst) |
+| Ping, median | 9 ms | 8 ms | 6 ms, 6 ms |
+| Ping, 95th percentile | 155 ms | 13 ms | 27 ms, 33 ms |
+| Ping, slowest | 219 ms | 19 ms | 442 ms, 820 ms |
+| Pings slower than 50 ms | 27% | 0% | 3.4%, 4% |
+| Pings lost | 0 of 200 | 0 of 200 | 5 of 600, worst 3 of 200 |
+| HTTP, median | 52 ms | 32 ms | 31 ms, 32 ms |
+| HTTP, 95th percentile | 365 ms | 50 ms | 54 ms, 60 ms |
+| HTTP, slowest | 1028 ms | 65 ms | 126 ms, 265 ms |
+| 300 commands in a row | not measured | not measured | 900 of 900 answered, slowest 2.5 s |
+
+The 2.7.1 sessions ran back to back in one night at -91/-92 dBm while a helper polled the strip every
+2 seconds; the 2.1.0 column is one quieter session. The gap between those two columns is within what a single
+session can hide, so read them as "a few percent of slow pings, no lost commands", not as a regression.
+
+The "before" column is **a single session**, and the stock firmware cannot be measured again: Athom does not
+publish it, so there is no way back. Raw outputs are in `docs/`.
+
+One line in the main loop mattered more than expected. With the same binary and the same signal
+(`docs/loop-rest.txt`):
+
+| Main loop | Requests answered | Worst answer |
+|---|---|---|
+| spinning, about 22,000 passes a second | 71 of 90 | 2.67 s |
+| resting 1 ms per pass, about 940 a second | 90 of 90 | 0.09 s |
+
+Why a spinning loop makes the radio deaf on this board is not established; the measurement is.
+
+Still open: after a restart the strip can stay unreachable from one particular Mac for 100-180 s although it
+has rejoined the router within seconds. Cause unknown.
+
+## Supported hardware
+
+- **Athom LS5050C-HK** RGB strip controller: ESP8266, 2 MB flash (DOUT), no serial header populated.
+- PWM on GPIO12, GPIO4, GPIO14; button on GPIO0; a spare MOSFET on GPIO13 (held low).
+- Which GPIO is red or green differs between board revisions: check with `/api/raw`, fix with `/api/config?pins=`.
+- Tested on **one unit**. Other Athom ESP8266 RGB controllers may work with other pins; none were tried.
+
+## Configure without putting secrets in the repository
+
+Wi-Fi name and password, the HomeKit pairing code and the update password are compiled in from `secrets.ini`,
+which git ignores:
+
+    cp secrets.example.ini secrets.ini     # then edit the four values
+
+- `WIFI_SSID` / `WIFI_PASS` are used only until the strip has joined once; later they can be changed with
+  `POST /api/wifi` or from the setup access point.
+- `HOMEKIT_CODE` is the code you type in the Home app (format `XXX-XX-XXX`).
+- `OTA_PASS` protects `/update`, `/api/config` and the setup access point.
+
+**Never commit or share a built `firmware.bin`**: it contains those four values. `.gitignore` excludes `*.bin`.
 
 ## Build, test, flash
 
-    cp secrets.example.ini secrets.ini       # then edit
     pio run
-    c++ -std=c++11 -Wall -Isrc test/test_policy.cpp -o /tmp/t && /tmp/t
-    c++ -std=c++11 -Wall -Isrc test/test_color.cpp  -o /tmp/t && /tmp/t
+    for t in color policy effects; do c++ -std=c++11 -Wall -Isrc test/test_$t.cpp -o /tmp/t && /tmp/t; done
+    python3 tools/scenes.py check
 
-    # from this firmware
-    curl -u admin:$OTA_PASS -F firmware=@.pio/build/specchio/firmware.bin http://specchio.local/update
-    # first time, from the stock Athom firmware (not reversible: Athom does not publish it)
-    curl -F file=@.pio/build/specchio/firmware.bin http://<ip>/update
+First flash, from the stock Athom firmware. **This cannot be undone**: there is no copy of the stock firmware
+to go back to.
 
-    python3 tools/bench.py specchio.local    # compare with docs/baseline-stock.txt
+    curl -F file=@.pio/build/specchio/firmware.bin http://<strip-address>/update
 
-## Hardware notes
+Later updates, from this firmware:
 
-- ESP8266, 2 MB flash (DOUT), same Arduino core (2.7.4) and flash layout as stock.
-- PWM on GPIO12, GPIO4, GPIO14; button GPIO0; spare MOSFET on GPIO13 (held low).
-  Which GPIO is red or green differs between board revisions: check with
-  `/api/raw`, fix with `/api/config?pins=`.
+    curl -u admin:$OTA_PASS -F firmware=@.pio/build/specchio/firmware.bin http://<strip-address>/update
+
+`tools/try_fw.sh` does the same with the self-restore guard in place and reports whether the new firmware
+joined or was rolled back; it needs a known-good image stored first (see the header of `src/guard.cpp`).
+The tools default to the author's strip address: pass yours with `--host` or `HOST=`.
+
+Then add the accessory in the Home app with your `HOMEKIT_CODE`.
+
+## API
+
+Open on the local network:
+
+    GET /api/state                           everything, as JSON
+    GET /api/log
+    GET /api/set?on=1&hex=ff8000&v=60        also h=0-360, s=0-100
+    GET /api/raw?r=1023&g=0&b=0              direct PWM duty (scenes, wiring tests); refused during a wake-up
+    GET /api/effect?name=alba&minutes=20     alba, focus; name=off stops
+    GET /api/flash?hex=ff8000&n=3            coloured blinks over whatever is showing
+    GET /api/wake?at=07:30                   or a POST with any text containing times; stop=1, off=1, ring=1
+    GET /api/scene?name=temporale&on=1       flips the Home switch of a scene the Mac plays
+    GET /api/set?shimmer=30&hourly=1&claude=1
+    GET /api/roam                            look for a better access point now
+
+Password protected (`admin` / `OTA_PASS`): `/api/config` (pins, PHY mode, boot state, fade, TX power),
+`POST /api/wifi`, `POST /api/reboot`, `POST /api/factory-reset`, `/update`, `/api/stash`, `/api/restore`.
+
+## Blink when Claude Code finishes
+
+Add a `Stop` hook to `~/.claude/settings.json`:
+
+    "hooks": { "Stop": [ { "hooks": [ {
+      "type": "command", "async": true, "timeout": 5,
+      "command": "curl -s -m 2 'http://<strip-address>/api/flash?hex=ff8000&n=3&src=claude' >/dev/null 2>&1 || true"
+    } ] } ] }
+
+Blinks tagged `src=claude` are shown only while the "Claude" switch in the Home app is on.
+
+## Mac tools
+
+    python3 tools/scenes.py                  # menu
+    python3 tools/scenes.py temporale film   # real rain and thunder, until stopped
+    python3 tools/scenes.py luogo Tokyo      # the sky over Tokyo now
+    python3 tools/scenes.py casa             # follow the scene switches of the Home app
+    python3 tools/fake_strip.py              # a stand-in strip, to try scenes without hardware
+    python3 tools/bench.py <strip-address>   # the measurements above
+
+Scenes need `ffmpeg` and use macOS programs (`afplay`, `sips`). Recordings are downloaded once from Wikimedia
+Commons; nothing is stored in this repository. Author and licence of each are in `tools/sounds.json` and are
+printed when it plays.
+
+## Credits and licences
+
+- This project: MIT, see `LICENSE`.
+- [HomeKit-ESP8266](https://github.com/Mixiaoxiao/Arduino-HomeKit-ESP8266) by Mixiaoxiao (MIT), used unmodified
+  as a dependency.
+- ESP8266 Arduino core 2.7.4 (LGPL-2.1).
+- The Xiaomi sign-in in `tools/xiaomi_login.py` follows the protocol documented by
+  [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) (MIT).
+  It uses an unofficial interface.
+- Data: USGS (earthquakes, webcams), NOAA (GOES X-ray flux, satellite images), NASA SDO, US National Park
+  Service, GeoNet New Zealand, Open-Meteo, adsb.lol, adsbdb, flagcdn, miot-spec.org.
+- Recordings: Wikimedia Commons contributors, listed in `tools/sounds.json`.

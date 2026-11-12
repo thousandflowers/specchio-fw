@@ -1,0 +1,18 @@
+# specchio-fw 2.7.1, three sessions back to back on 2026-11-12 between 04:03 and 04:17, from the Mac.
+# Strip at -91/-92 dBm. A helper on the same Mac was polling /api/state every 2 s the whole time.
+# Per session: tools/bench.py (200 pings, 40 HTTP requests), then 300 GET /api/state 0.4 s apart with a 3 s timeout.
+## session 1, 2026-11-12 04:03, rssi -92 dBm
+ping: n=200 lost=2 (1%)  median=6ms  p95=33ms  max=305ms
+ping slower than 50ms: 8/198 (4%)
+http: n=40 lost=0 (0%)  median=32ms  p95=54ms  max=57ms
+commands: n=300 lost=0 (0.0%)  median=44ms  max=2522ms
+## session 2, 2026-11-12 04:07, rssi -92 dBm
+ping: n=200 lost=0 (0%)  median=6ms  p95=32ms  max=201ms
+ping slower than 50ms: 7/200 (4%)
+http: n=40 lost=0 (0%)  median=29ms  p95=60ms  max=265ms
+commands: n=300 lost=0 (0.0%)  median=41ms  max=2383ms
+## session 3, 2026-11-12 04:12, rssi -91 dBm
+ping: n=200 lost=3 (2%)  median=6ms  p95=15ms  max=820ms
+ping slower than 50ms: 5/197 (3%)
+http: n=40 lost=0 (0%)  median=32ms  p95=48ms  max=55ms
+commands: n=300 lost=0 (0.0%)  median=61ms  max=207ms
