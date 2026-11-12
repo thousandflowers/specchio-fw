@@ -50,7 +50,7 @@ From a Mac on the same network (`tools/`, macOS only, experimental):
 - **Home app switches** for the scenes: Temporale, Mare in tempesta, Sole, Sonno, Aria, Terremoti,
   Posto lontano, Aerei. The strip holds the switch, `scenes.py casa` on the Mac plays the scene; scenes that
   drive the light exclude each other, and a wake-up always wins over any of them.
-- **"Luogo" in the Home app is a television whose inputs are six places**: turning it on shows the sky over the
+- **"Luogo" in the Home app is a television whose inputs are six places** (2.9.0, experimental: not yet on the real device): turning it on shows the sky over the
   chosen place, picking another input changes place, and renaming an input in the Home app (TV settings) makes
   the new name the new place. The names live on the strip (`/places.txt`, `/api/places`).
 - **A globe on the phone** to fill those six places: `scenes.py casa` serves it at
