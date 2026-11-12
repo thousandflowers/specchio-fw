@@ -13,6 +13,7 @@
     scenes.py aria                   # watch the air: normal light, coloured blinks when it gets bad
     scenes.py aria --sempre          # the mirror stays the colour of the air (PM2.5)
     scenes.py aria --prova           # the whole scale in 20 seconds, from clean to very bad
+    scenes.py casa                   # follow the scene switches of the Home app: on starts, off stops
     scenes.py check                  # self-check, touches neither lamp nor network
 
 Ctrl-C stops a scene; the lamp goes back to what it was showing.
@@ -24,7 +25,9 @@ import itertools
 import json
 import math
 import random
+import signal
 import subprocess
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -710,6 +713,80 @@ def run_air(host: str, seconds: float, is_sweep: bool) -> None:
             time.sleep(min(AIR_REFRESH_S, left))
 
 
+# ---------- Home app: the strip holds one switch per scene, this follows them ----------
+
+HOME_POLL_S = 2
+HOME_STOP_S = 8     # a scene gets this long to put the lamp back before it is killed
+
+
+class HomeScene(NamedTuple):
+    arguments: tuple[str, ...]   # what to run: scenes.py <arguments>
+    owns_lamp: bool              # drives the light all the time: only one of these at once
+
+
+def home_scenes() -> dict[str, HomeScene]:
+    """Keys are the firmware's scene switches (SCENES in src/main.cpp)."""
+    return {
+        "temporale": HomeScene(("temporale", next(iter(REAL_STORMS))), True),
+        "posto": HomeScene(("posto", load_places()[0].key), True),
+        "aria": HomeScene(("aria",), False),
+        "terremoti": HomeScene(("terremoti",), False),
+        "aerei": HomeScene(("aerei",), False),
+    }
+
+
+def to_drop(wanted: frozenset[str], running: frozenset[str], scenes: dict[str, HomeScene]) -> frozenset[str]:
+    """Lamp-owning scenes that must give way: a newly switched-on one wins over those already playing."""
+    owners = frozenset(key for key in wanted if scenes[key].owns_lamp)
+    fresh = owners - running
+    if len(owners) <= 1:
+        return frozenset()
+    keep = sorted(fresh)[0] if fresh else sorted(owners)[0]
+    return owners - {keep}
+
+
+def stop_scene(process: subprocess.Popen) -> None:
+    process.terminate()   # main() turns this into the same clean stop as Ctrl-C: sound off, lamp restored
+    try:
+        process.wait(HOME_STOP_S)
+    except subprocess.TimeoutExpired:
+        process.kill()
+
+
+def run_home(host: str) -> None:
+    scenes = home_scenes()
+    running: dict[str, subprocess.Popen] = {}
+    print("seguo gli interruttori dell'app Casa: Ctrl-C per fermare")
+    try:
+        while True:
+            state = lan_get(host, "/api/state")
+            listed = json.loads(state).get("scenes") if state else None
+            if listed is None:
+                print("la striscia non risponde o ha un firmware senza scene" if state else "la striscia non risponde")
+                time.sleep(HOME_POLL_S * 5)
+                continue
+            wanted = frozenset(key for key in listed.split(",") if key in scenes)
+            for key in to_drop(wanted, frozenset(running), scenes):
+                lan_get(host, f"/api/scene?name={key}&on=0")
+                wanted = wanted - {key}
+            for key in list(running):
+                if key not in wanted:
+                    print(f"{time.strftime('%H:%M')}  {key}: spento")
+                    stop_scene(running.pop(key))
+                elif running[key].poll() is not None:
+                    print(f"{time.strftime('%H:%M')}  {key}: finito da solo, spengo l'interruttore")
+                    del running[key]
+                    lan_get(host, f"/api/scene?name={key}&on=0")
+                    wanted = wanted - {key}
+            for key in wanted - frozenset(running):
+                print(f"{time.strftime('%H:%M')}  {key}: acceso")
+                running[key] = subprocess.Popen([sys.executable, __file__, "--host", host, *scenes[key].arguments])
+            time.sleep(HOME_POLL_S)
+    finally:
+        for process in running.values():
+            stop_scene(process)
+
+
 # ---------- self-check, menu, command line ----------
 
 
@@ -754,6 +831,10 @@ def check() -> None:
     assert broken_rules({"filter-life-level": 0}, ()) == (spent,) and broken_rules({"temperature": 99}, ()) == ()
     assert is_quiet(23) and is_quiet(3) and not is_quiet(8) and not is_quiet(22)
     assert set(AIR_LABELS) == set(purifier.READINGS) >= {rule.reading for rule in AIR_RULES}
+    home = home_scenes()
+    assert to_drop(frozenset({"temporale", "aria"}), frozenset(), home) == frozenset(), "the air watch lives with a scene"
+    assert to_drop(frozenset({"temporale", "posto"}), frozenset({"temporale"}), home) == {"temporale"}, "the new one wins"
+    assert to_drop(frozenset({"temporale", "posto"}), frozenset(), home) == {"temporale"}, "both at once: one stays"
     frame = thunder_frame((0.0, 0.0, 1.0, 0.2), 0.0)
     assert frame(-1.0, 9) == STORM_LIGHT and frame(0.0, 9) == STORM_LIGHT and frame(9.0, 9) == STORM_LIGHT
     keys = {entry.key for entry in load_sounds()}
@@ -836,8 +917,13 @@ def main() -> None:
     air.add_argument("--sempre", action="store_true", help="keep the mirror the colour of the air instead of only warning")
     air.add_argument("--anche-di-notte", action="store_true", help=f"blink also between {QUIET_HOURS[0]}:00 and {QUIET_HOURS[1]}:00")
     air.add_argument("--seconds", type=float, default=math.inf)
+    scenes.add_parser("casa")
     scenes.add_parser("check")
     args = parser.parse_args()
+    # Stop cleanly on Ctrl-C and on terminate, even when started with Ctrl-C ignored (a shell's background job).
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+    sys.stdout.reconfigure(line_buffering=True)
 
     try:
         if args.scene == "temporale":
@@ -870,6 +956,8 @@ def main() -> None:
                 run_air(args.host, args.seconds, args.prova)
             else:
                 watch_air(args.host, args.seconds, args.anche_di_notte)
+        elif args.scene == "casa":
+            run_home(args.host)
         elif args.scene == "check":
             check()
         else:

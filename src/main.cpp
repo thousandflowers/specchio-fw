@@ -12,6 +12,7 @@ extern "C" {
 extern homekit_server_config_t hk_config;
 extern homekit_characteristic_t cha_on, cha_bri, cha_hue, cha_sat;
 extern homekit_characteristic_t cha_fx_alba, cha_fx_focus, cha_shimmer, cha_hourly, cha_claude;
+extern homekit_characteristic_t cha_sc_storm, cha_sc_air, cha_sc_quakes, cha_sc_place, cha_sc_planes;
 int homekit_storage_reset();
 }
 
@@ -318,6 +319,37 @@ void setClaude(bool isOn) {
   saveConfigOrLog();
 }
 
+// Scenes (storm with sound, air watch, ...) are played by the Mac, which reads
+// these switches from /api/state. Here they are only switches: kept in RAM,
+// off after a reboot, so a scene never restarts on its own.
+struct SceneDef {
+  const char *key;
+  homekit_characteristic_t *homekitSwitch;
+};
+static const SceneDef SCENES[] = {
+  {"temporale", &cha_sc_storm}, {"aria", &cha_sc_air}, {"terremoti", &cha_sc_quakes},
+  {"posto", &cha_sc_place},     {"aerei", &cha_sc_planes},
+};
+
+bool setScene(const char *key, bool isOn) {
+  for (const SceneDef &def : SCENES) {
+    if (strcmp(def.key, key) != 0) continue;
+    syncSwitch(def.homekitSwitch, isOn);
+    return true;
+  }
+  return false;
+}
+
+// "temporale,aria": the keys of the scenes switched on, for /api/state.
+void scenesOn(char *out, size_t size) {
+  out[0] = 0;
+  for (const SceneDef &def : SCENES) {
+    if (!def.homekitSwitch->value.bool_value) continue;
+    if (out[0]) strlcat(out, ",", size);
+    strlcat(out, def.key, size);
+  }
+}
+
 // ---------- wake-up ----------
 static bool isWakeRunning() { return wakeState == WAKE_SUNRISE || wakeState == WAKE_HOLD || wakeState == WAKE_INSIST; }
 
@@ -496,6 +528,7 @@ static void hkSetShimmer(const homekit_value_t v) {
 
 static void hkSetHourly(const homekit_value_t v) { setHourly(v.bool_value); }
 static void hkSetClaude(const homekit_value_t v) { setClaude(v.bool_value); }
+static void hkSetScene(homekit_characteristic_t *ch, const homekit_value_t v) { ch->value = v; }
 
 static void hkEvent(homekit_event_t event) {
   if (event == HOMEKIT_EVENT_PAIRING_ADDED) LOG("homekit: paired");
@@ -511,6 +544,7 @@ static void homekitStart() {
   cha_shimmer.setter = hkSetShimmer;
   cha_hourly.setter = hkSetHourly;
   cha_claude.setter = hkSetClaude;
+  for (const SceneDef &def : SCENES) def.homekitSwitch->setter_ex = hkSetScene;
   cha_shimmer.value.bool_value = cfg.shimmer > 0;
   cha_hourly.value.bool_value = cfg.isHourly;
   cha_claude.value.bool_value = cfg.isClaudeOn;

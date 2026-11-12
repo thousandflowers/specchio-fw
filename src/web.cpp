@@ -92,13 +92,15 @@ static void sendState() {
   char wake[6] = "";
   time_t wakeAt = cfg.wakeAt;
   if (wakeAt) strftime(wake, sizeof wake, "%H:%M", localtime(&wakeAt));
-  char buf[960];
+  char scenes[48];
+  scenesOn(scenes, sizeof scenes);
+  char buf[1024];
   snprintf(buf, sizeof buf,
     "{\"on\":%s,\"h\":%s,\"s\":%s,\"v\":%d,\"hex\":\"%s\","
     "\"rssi\":%d,\"ssid\":\"%s\",\"bssid\":\"%s\",\"channel\":%d,\"phy\":\"%c\","
     "\"disconnects\":%lu,\"failed_joins\":%lu,\"last_disconnect\":\"%s\",\"tx_dbm\":%u,"
     "\"pins\":\"%d,%d,%d\",\"boot\":\"%c\",\"fade_ms\":%u,"
-    "\"effect\":\"%s\",\"effect_left_s\":%lu,\"shimmer\":%u,\"hourly\":%s,\"claude\":%s,\"time\":\"%s\","
+    "\"effect\":\"%s\",\"effect_left_s\":%lu,\"shimmer\":%u,\"hourly\":%s,\"claude\":%s,\"scenes\":\"%s\",\"time\":\"%s\","
     "\"wake\":\"%s\",\"wake_phase\":\"%s\",\"wake_lead_min\":%u,\"wake_insist_min\":%u,"
     "\"homekit_paired\":%s,\"homekit_clients\":%d,\"safe_mode\":%s,"
     "\"heap\":%lu,\"uptime_s\":%lu,\"reset\":\"%s\",\"fw\":\"%s\"}",
@@ -109,7 +111,7 @@ static void sendState() {
     netLastReason ? discReasonName(netLastReason) : "", cfg.txDbm,
     cfg.pins[0], cfg.pins[1], cfg.pins[2], cfg.boot, cfg.fadeMs,
     effectName(), (unsigned long)effectSecondsLeft(), cfg.shimmer, cfg.isHourly ? "true" : "false",
-    cfg.isClaudeOn ? "true" : "false", clock,
+    cfg.isClaudeOn ? "true" : "false", scenes, clock,
     wake, wakePhaseName(), cfg.wakeLeadMin, cfg.wakeInsistMin,
     homekitPaired() ? "true" : "false", homekitClients(), safeMode ? "true" : "false",
     (unsigned long)ESP.getFreeHeap(), millis() / 1000UL, ESP.getResetReason().c_str(), FW_VERSION);
@@ -140,6 +142,14 @@ static void handleSet() {
   bool isLightChange = server.hasArg("on") || server.hasArg("hex") || server.hasArg("h") ||
                        server.hasArg("s") || server.hasArg("v");
   if (isLightChange) applyLight();
+  sendState();
+}
+
+// /api/scene?name=temporale&on=1   flips the Home switch of a scene the Mac plays (see SCENES in main.cpp)
+static void handleScene() {
+  if (!setScene(server.arg("name").c_str(), server.arg("on") != "0")) {
+    return sendText(400, "name: temporale, aria, terremoti, posto or aerei");
+  }
   sendState();
 }
 
@@ -318,6 +328,7 @@ void webBegin() {
   server.on("/api/set", handleSet);
   server.on("/api/raw", handleRaw);
   server.on("/api/effect", handleEffect);
+  server.on("/api/scene", handleScene);
   server.on("/api/flash", handleFlash);
   server.on("/api/wake", handleWake);
   server.on("/api/spin", [] {  // ?s=30 starts, ?s=0 stops, no argument just reports; see LOOP_REST_MS
