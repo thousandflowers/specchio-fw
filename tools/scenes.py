@@ -46,7 +46,8 @@ from urllib.request import Request, urlopen
 import nature
 import purifier
 import sound
-from demo_effects import Effect, Hsv, lan_get, local_setting, play, send, wave
+import globe
+from demo_effects import Effect, Hsv, lan_get, local_setting, play, read_local, send, wave
 
 HOST = local_setting("strip", "specchio.local")   # this home's values live in tools/local.json
 NET_TIMEOUT_S = 12
@@ -415,9 +416,24 @@ def spot_frame(weather: Weather, strikes: tuple[Strike, ...], height: Callable[[
     return frame
 
 
+def saved_spot() -> Spot:
+    """The place picked on the globe, or the home; error when neither is set."""
+    local = read_local()
+    place = local.get("place")
+    if isinstance(place, dict):
+        return Spot(str(place["name"]), float(place["lat"]), float(place["lon"]))
+    if local.get("home"):
+        latitude, longitude = read_here(str(local["home"]))
+        return Spot("casa", latitude, longitude)
+    raise OSError("nessun luogo scelto: usa il globo (scenes.py casa, poi la pagina sul telefono) o scrivi un nome")
+
+
 def run_spot(host: str, name: str, seconds: float, replay: str) -> None:
-    """replay: "" follows the real sun; "alba" or "tramonto" plays that place's dawn or dusk in three minutes."""
-    spot = find_spot(name)
+    """replay: "" follows the real sun; "alba" or "tramonto" plays that place's dawn or dusk in three minutes.
+
+    Without a name: the place picked on the globe (tools/local.json).
+    """
+    spot = find_spot(name) if name else saved_spot()
     weather = CALM
     left = DAWN_REPLAY_S if replay else seconds
     with borrowed(host):
@@ -929,6 +945,10 @@ def home_scenes() -> dict[str, HomeScene]:
         "aria": HomeScene(("aria",), False),
         "terremoti": HomeScene(("terremoti",), False),
         "aerei": HomeScene(("aerei",), False),
+        "mare": HomeScene(("temporale", "mare"), True),
+        "luogo": HomeScene(("luogo",), True),
+        "sole": HomeScene(("sole",), True),
+        "sonno": HomeScene(("sonno",), True),
     }
 
 
@@ -954,8 +974,19 @@ def run_home(host: str) -> None:
     scenes = home_scenes()
     running: dict[str, subprocess.Popen] = {}
     print("seguo gli interruttori dell'app Casa: Ctrl-C per fermare")
+    page = globe.serve(host)
+    if page:
+        name = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True, text=True).stdout.strip()
+        print(f"globo per scegliere il luogo: http://{name or 'questo-mac'}.local:{globe.PORT}")
+    place_seen = read_local().get("place")
+    parent = os.getppid()   # started by the auto-start service: when that stops, stop too and take the scenes along
     try:
-        while True:
+        while os.getppid() == parent:
+            place_now = read_local().get("place")
+            if place_now != place_seen and "luogo" in running:
+                print(f"{time.strftime('%H:%M')}  luogo: nuovo posto, riparto")
+                stop_scene(running.pop("luogo"))
+            place_seen = place_now
             state = lan_get(host, "/api/state")
             listed = json.loads(state).get("scenes") if state else None
             if listed is None:
@@ -980,6 +1011,8 @@ def run_home(host: str) -> None:
                 running[key] = subprocess.Popen([sys.executable, __file__, "--host", host, *scenes[key].arguments])
             time.sleep(HOME_POLL_S)
     finally:
+        if page:
+            page.shutdown()
         for process in running.values():
             stop_scene(process)
 
@@ -1036,6 +1069,14 @@ def check() -> None:
     assert spot_frame(CALM, (), lambda elapsed: -30.0)(1, 9) == nature.SKY[0][1], "a calm night is the night colour"
     assert long_band([{"energy": "0.1-0.8nm", "flux": 2e-6}, {"energy": "0.05-0.4nm", "flux": 9}, {"energy": "0.1-0.8nm", "flux": 0}]) == (2e-6,)
     nature.demo()
+    assert globe.clean_place({"lat": "45.5", "lon": 12.3, "name": "Ve\nnezia"}) == {"name": "Venezia", "lat": 45.5, "lon": 12.3}
+    assert globe.clean_place({"lat": 1, "lon": 2})["name"] == "1.00, 2.00"
+    for bad in ({"lat": 91, "lon": 0}, {"lat": "x", "lon": 0}, {"lon": 0}):
+        try:
+            globe.clean_place(bad)
+            raise AssertionError(f"accepted {bad}")
+        except (KeyError, ValueError):
+            pass
     home = home_scenes()
     assert to_drop(frozenset({"temporale", "aria"}), frozenset(), home) == frozenset(), "the air watch lives with a scene"
     assert to_drop(frozenset({"temporale", "posto"}), frozenset({"temporale"}), home) == {"temporale"}, "the new one wins"
@@ -1130,7 +1171,7 @@ def main() -> None:
     air.add_argument("--anche-di-notte", action="store_true", help=f"blink also between {QUIET_HOURS[0]}:00 and {QUIET_HOURS[1]}:00")
     air.add_argument("--seconds", type=float, default=math.inf)
     spot = scenes.add_parser("luogo")
-    spot.add_argument("name", help="any place name: a city, an island, a mountain")
+    spot.add_argument("name", nargs="?", default="", help="any place name; without it, the place picked on the globe")
     spot.add_argument("--alba", action="store_const", dest="replay", const="alba", default="")
     spot.add_argument("--tramonto", action="store_const", dest="replay", const="tramonto")
     spot.add_argument("--seconds", type=float, default=math.inf)

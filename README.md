@@ -43,7 +43,12 @@ From a Mac on the same network (`tools/`, macOS only, experimental):
   - **Sleep** (`sonno`): a dim breath-paced light and rain that fade to dark.
 - **Air quality** from a Xiaomi purifier read on the local network (`tools/purifier.py`): the lamp keeps its light
   and blinks a colour when dust or humidity pass a limit.
-- **Home app switches** for the scenes: the strip holds the switch, `scenes.py casa` on the Mac plays the scene.
+- **Home app switches** for the scenes: Temporale, Mare in tempesta, Luogo, Sole, Sonno, Aria, Terremoti,
+  Posto lontano, Aerei. The strip holds the switch, `scenes.py casa` on the Mac plays the scene; scenes that
+  drive the light exclude each other, and a wake-up always wins over any of them.
+- **A globe on the phone** to choose the place the "Luogo" switch shows: `scenes.py casa` serves it at
+  `http://<mac-name>.local:8765`. Turn it with a finger, tap a point or search a name; it shades the night side
+  of the Earth as it is right now.
 
 ## Measured: before and after
 
@@ -99,6 +104,7 @@ which git ignores:
 - `WIFI_SSID` / `WIFI_PASS` are used only until the strip has joined once; later they can be changed with
   `POST /api/wifi` or from the setup access point.
 - `HOMEKIT_CODE` is the code you type in the Home app (format `XXX-XX-XXX`).
+- `GOOD_FW_MD5` (optional) is the md5 of the known-good image the self-restore guard may install.
 - `OTA_PASS` protects `/update`, `/api/config` and the setup access point.
 
 **Never commit or share a built `firmware.bin`**: it contains those four values. `.gitignore` excludes `*.bin`.
@@ -166,9 +172,15 @@ Blinks tagged `src=claude` are shown only while the "Claude" switch in the Home 
     python3 tools/scenes.py                  # menu
     python3 tools/scenes.py temporale film   # real rain and thunder, until stopped
     python3 tools/scenes.py luogo Tokyo      # the sky over Tokyo now
-    python3 tools/scenes.py casa             # follow the scene switches of the Home app
+    python3 tools/scenes.py casa             # follow the scene switches of the Home app, serve the globe
+    tools/install_autostart.sh               # the same, started with the Mac (remove: install_autostart.sh remove)
     python3 tools/fake_strip.py              # a stand-in strip, to try scenes without hardware
     python3 tools/bench.py <strip-address>   # the measurements above
+
+`install_autostart.sh` runs the helper from a copy in `~/Library/Application Support/specchio`: a program
+started at login may not read Desktop or Documents without a click on a privacy prompt, and macOS keeps a Python
+started directly by launchd off the local network, so the service starts it through `osascript`. Run the script
+again after changing the tools; your `local.json` and `purifier.json` in the copy are kept.
 
 Scenes need `ffmpeg` and use macOS programs (`afplay`, `sips`). Recordings are downloaded once from Wikimedia
 Commons; nothing is stored in this repository. Author and licence of each are in `tools/sounds.json` and are

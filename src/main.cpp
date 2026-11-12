@@ -14,6 +14,7 @@ extern homekit_characteristic_t cha_on, cha_bri, cha_hue, cha_sat;
 extern homekit_characteristic_t cha_fx_alba, cha_fx_focus, cha_shimmer, cha_hourly, cha_claude;
 extern homekit_characteristic_t cha_serial;
 extern homekit_characteristic_t cha_sc_storm, cha_sc_air, cha_sc_quakes, cha_sc_place, cha_sc_planes;
+extern homekit_characteristic_t cha_sc_sea, cha_sc_spot, cha_sc_sun, cha_sc_sleep;
 int homekit_storage_reset();
 }
 
@@ -337,7 +338,8 @@ struct SceneDef {
 };
 static const SceneDef SCENES[] = {
   {"temporale", &cha_sc_storm}, {"aria", &cha_sc_air}, {"terremoti", &cha_sc_quakes},
-  {"posto", &cha_sc_place},     {"aerei", &cha_sc_planes},
+  {"posto", &cha_sc_place},     {"aerei", &cha_sc_planes},     {"mare", &cha_sc_sea},
+  {"luogo", &cha_sc_spot},      {"sole", &cha_sc_sun},         {"sonno", &cha_sc_sleep},
 };
 
 bool setScene(const char *key, bool isOn) {

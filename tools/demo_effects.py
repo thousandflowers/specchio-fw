@@ -106,12 +106,25 @@ def to_duty(level: float) -> int:
 LOCAL_FILE = Path(__file__).with_name("local.json")   # this home's addresses and coordinates: not in git
 
 
-def local_setting(key: str, default: str) -> str:
-    """A value that belongs to one home, read from tools/local.json (see local.example.json), never from the code."""
+def read_local() -> dict:
+    """Everything that belongs to one home, from tools/local.json (see local.example.json); {} when absent."""
     try:
-        return str(json.loads(LOCAL_FILE.read_text())[key])
-    except (OSError, ValueError, KeyError):
-        return default
+        data = json.loads(LOCAL_FILE.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def local_setting(key: str, default: str) -> str:
+    return str(read_local().get(key, default))
+
+
+def update_local(changes: dict) -> None:
+    """Merge changes into tools/local.json, writing a new file and renaming it so a reader never sees half of it."""
+    merged = {**read_local(), **changes}
+    draft = LOCAL_FILE.with_suffix(".tmp")
+    draft.write_text(json.dumps(merged, indent=1, ensure_ascii=False) + "\n")
+    draft.replace(LOCAL_FILE)
 
 
 def lan_get(host: str, path: str) -> bytes | None:

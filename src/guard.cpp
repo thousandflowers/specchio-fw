@@ -1,4 +1,7 @@
-// Experiment builds only (-DSELF_RESTORE -DGOOD_FW_MD5=...).
+// Experiment builds only (-DSELF_RESTORE, and GOOD_FW_MD5 from secrets.ini).
+#ifndef GOOD_FW_MD5
+#define GOOD_FW_MD5 ""  // no known-good image named: the guard reports, but never installs anything
+#endif
 //
 // The strip has no serial port, and a firmware that cannot join the network
 // needs a person to recover it through the setup AP. With this guard a

@@ -92,7 +92,7 @@ static void sendState() {
   char wake[6] = "";
   time_t wakeAt = cfg.wakeAt;
   if (wakeAt) strftime(wake, sizeof wake, "%H:%M", localtime(&wakeAt));
-  char scenes[48];
+  char scenes[80];
   scenesOn(scenes, sizeof scenes);
   char buf[1024];
   snprintf(buf, sizeof buf,
@@ -148,7 +148,7 @@ static void handleSet() {
 // /api/scene?name=temporale&on=1   flips the Home switch of a scene the Mac plays (see SCENES in main.cpp)
 static void handleScene() {
   if (!setScene(server.arg("name").c_str(), server.arg("on") != "0")) {
-    return sendText(400, "name: temporale, aria, terremoti, posto or aerei");
+    return sendText(400, "name: temporale, aria, terremoti, posto, aerei, mare, luogo, sole or sonno");
   }
   sendState();
 }

@@ -26,6 +26,10 @@ homekit_characteristic_t cha_sc_air = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_sc_quakes = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_sc_place = HOMEKIT_CHARACTERISTIC_(ON, false);
 homekit_characteristic_t cha_sc_planes = HOMEKIT_CHARACTERISTIC_(ON, false);
+homekit_characteristic_t cha_sc_sea = HOMEKIT_CHARACTERISTIC_(ON, false);
+homekit_characteristic_t cha_sc_spot = HOMEKIT_CHARACTERISTIC_(ON, false);
+homekit_characteristic_t cha_sc_sun = HOMEKIT_CHARACTERISTIC_(ON, false);
+homekit_characteristic_t cha_sc_sleep = HOMEKIT_CHARACTERISTIC_(ON, false);
 
 // The Home app (iOS 16+) ignores NAME on a service and shows the accessory
 // name on every tile; CONFIGURED_NAME is the one it actually displays.
@@ -60,6 +64,10 @@ homekit_accessory_t *accessories[] = {
     MODE_SWITCH("Terremoti", &cha_sc_quakes),
     MODE_SWITCH("Posto lontano", &cha_sc_place),
     MODE_SWITCH("Aerei", &cha_sc_planes),
+    MODE_SWITCH("Mare in tempesta", &cha_sc_sea),
+    MODE_SWITCH("Luogo", &cha_sc_spot),
+    MODE_SWITCH("Sole", &cha_sc_sun),
+    MODE_SWITCH("Sonno", &cha_sc_sleep),
     NULL
   }),
   NULL
@@ -70,6 +78,6 @@ homekit_server_config_t hk_config = {
   .password = HOMEKIT_CODE,
   // Must go up whenever services are added or removed, or iOS keeps showing
   // the accessory from its cache (stock was 1, v2.0 was 2, v2.2.0 was 3, the
-  // Claude switch in 2.6.1 made it 7, the scene switches in 2.7.0 made it 8).
-  .config_number = 8,
+  // Claude switch in 2.6.1 made it 7, the scene switches in 2.7.0 made it 8, four more in 2.8.0 made it 9).
+  .config_number = 9,
 };
