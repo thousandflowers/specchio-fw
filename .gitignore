@@ -1,3 +1,5 @@
 .pio/
 secrets.ini
 tools/qui.txt
+tools/purifier.json
+__pycache__/

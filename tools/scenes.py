@@ -9,6 +9,8 @@
     scenes.py posto --giro           # every place in places.json, plus a preview page
     scenes.py aerei --qui 48.86,2.35  # planes overhead: the flag colours of the country they fly to
     scenes.py suoni                  # real recordings, one at a time: the light follows the thunder
+    scenes.py aria                   # the colour of the air: PM2.5 read from the Xiaomi purifier
+    scenes.py aria --prova           # the whole scale in 20 seconds, from clean to very bad
     scenes.py check                  # self-check, touches neither lamp nor network
 
 Ctrl-C stops a scene; the lamp goes back to what it was showing.
@@ -29,6 +31,7 @@ from typing import Callable, Iterator, NamedTuple
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import purifier
 import sound
 from demo_effects import Effect, Hsv, lan_get, play, send, wave
 
@@ -525,6 +528,44 @@ def run_planes(host: str, here: tuple[float, float], km: float, seconds: float) 
         time.sleep(min(PLANES_POLL_S, left))
 
 
+# ---------- air quality: the colour of the air in the room ----------
+
+AIR_SCALE = ((0, 120), (25, 60), (50, 30), (100, 0), (200, -70))  # PM2.5 in µg/m³ -> hue: green, yellow, orange, red, purple
+AIR_LIGHT = 0.6
+AIR_REFRESH_S = 60
+AIR_SWEEP_S = 20
+
+
+def air_colour(pm25: float) -> Hsv:
+    """Hue slides along AIR_SCALE: clean air is green, the worst the purifier can report is purple."""
+    clamped = min(max(pm25, AIR_SCALE[0][0]), AIR_SCALE[-1][0])
+    for (low, low_hue), (high, high_hue) in zip(AIR_SCALE, AIR_SCALE[1:]):
+        if clamped <= high:
+            return Hsv((low_hue + (high_hue - low_hue) * (clamped - low) / (high - low)) % 360, 1.0, AIR_LIGHT)
+    return Hsv(AIR_SCALE[-1][1] % 360, 1.0, AIR_LIGHT)
+
+
+def run_air(host: str, seconds: float, is_sweep: bool) -> None:
+    if is_sweep:
+        worst = AIR_SCALE[-1][0]
+        with borrowed(host):
+            play(host, Effect("aria", "aria", AIR_SWEEP_S, lambda elapsed, total: air_colour(worst * elapsed / total)), False)
+        return
+    started = time.monotonic()
+    with borrowed(host):
+        while True:
+            try:
+                pm25 = purifier.read_pm25()
+                is_shown = hold(host, air_colour(pm25))
+                print(f"{time.strftime('%H:%M')}  PM2.5 {pm25} µg/m³  {as_hex(air_colour(pm25))}{'' if is_shown else '  (non arrivato)'}")
+            except (OSError, KeyError, ValueError) as error:
+                print(f"purificatore non letto ({error}), riprovo")
+            left = seconds - (time.monotonic() - started)
+            if left <= 0:
+                return
+            time.sleep(min(AIR_REFRESH_S, left))
+
+
 # ---------- self-check, menu, command line ----------
 
 
@@ -560,6 +601,7 @@ def check() -> None:
     assert quake_pulse(second, 3.0).seconds == pulse.seconds / 3
     assert all(place.area in AREAS and place.url.startswith("https://") for place in load_places())
     assert len({entry.key for entry in load_sounds()}) == len(load_sounds()) > 0
+    assert [round(air_colour(value).hue) for value in (-5, 0, 25, 37.5, 100, 150, 9999)] == [120, 120, 60, 45, 0, 325, 290]
     frame = thunder_frame((0.0, 0.0, 1.0, 0.2), 0.0)
     assert frame(-1.0, 9) == STORM_LIGHT and frame(0.0, 9) == STORM_LIGHT and frame(9.0, 9) == STORM_LIGHT
     crack = frame(2.2 * sound.ENVELOPE_STEP_S - NET_LAG_S, 9)   # the frame is drawn NET_LAG_S ahead of the sound
@@ -576,6 +618,9 @@ def menu(host: str) -> None:
         ("posti: giro di tutti, con anteprima", lambda: run_tour(host)),
         *((f"posto: {place.name}", lambda place=place: run_place(host, place, math.inf)) for place in load_places()),
     ]
+    if purifier.CONFIG.exists():
+        entries.append(("aria: il colore della qualità dell'aria", lambda: run_air(host, math.inf, False)))
+        entries.append(("aria: prova di tutta la scala in 20 secondi", lambda: run_air(host, 0, True)))
     if HERE_FILE.exists():
         here = read_here(HERE_FILE.read_text())
         entries.append(("aerei sopra casa: bandiera della destinazione", lambda: run_planes(host, here, 15, math.inf)))
@@ -624,6 +669,9 @@ def main() -> None:
     sounds.add_argument("--seconds", type=float, default=LISTEN_S)
     sounds.add_argument("--anticipo", type=float, default=SOUND_LEAD_S,
                         help="seconds the Mac needs to start the sound; raise it if the light comes before the thunder")
+    air = scenes.add_parser("aria")
+    air.add_argument("--prova", action="store_true", help="sweep the whole scale instead of reading the purifier")
+    air.add_argument("--seconds", type=float, default=math.inf)
     scenes.add_parser("check")
     args = parser.parse_args()
 
@@ -650,6 +698,8 @@ def main() -> None:
             listen(args.host, by_key[args.key], args.seconds, args.anticipo)
         elif args.scene == "suoni":
             sounds_menu(args.host, args.seconds, args.anticipo)
+        elif args.scene == "aria":
+            run_air(args.host, args.seconds, args.prova)
         elif args.scene == "check":
             check()
         else:
